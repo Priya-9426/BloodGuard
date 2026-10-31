@@ -10,10 +10,21 @@ import {
 const viteEnvironment = (
   import.meta as ImportMeta & { env?: Record<string, string | undefined> }
 ).env;
-const API_BASE_URL = (viteEnvironment?.VITE_API_BASE_URL || "/api").replace(
-  /\/$/,
-  "",
-);
+
+function getApiBaseUrl(): string {
+  if (viteEnvironment?.VITE_API_BASE_URL) {
+    return viteEnvironment.VITE_API_BASE_URL.replace(/\/$/, "");
+  }
+  if (typeof window !== "undefined") {
+    const port = window.location.port;
+    if (window.location.protocol === "file:" || (port && port !== "3000" && port !== "4000")) {
+      return "http://localhost:4000/api";
+    }
+  }
+  return "/api";
+}
+
+const API_BASE_URL = getApiBaseUrl();
 const AUTH_TOKEN_KEY = "bg_auth_token";
 const ACTIVE_ROLE_KEY = "bg_active_role";
 

@@ -4,9 +4,12 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
+    "start": "node server.js",
     "dev": "vite",
     "build": "tsc && vite build && node scripts/sync-dist.js",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "backend": "node src/backend/server.js",
+    "ml": ".\\.venv\\Scripts\\python.exe -m uvicorn fraud_detector:app --app-dir src/backend/ml --host 127.0.0.1 --port 5001"
   },
   "dependencies": {
     "canvas-confetti": "^1.9.4",
