@@ -2,6 +2,14 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "▶ Start BloodGuard Server (Root)",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/server.js",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    },
+    {
       "type": "node",
       "request": "launch",
       "name": "Backend Server (Express)",
@@ -31,6 +39,13 @@
       "args": ["fraud_detector:app", "--host", "127.0.0.1", "--port", "5001", "--reload"],
       "cwd": "${workspaceFolder}/src/backend/ml",
       "console": "integratedTerminal"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "▶ Full Stack (Backend + Frontend)",
+      "configurations": ["Backend Server (Express)", "Frontend Dev (Vite)"],
+      "stopAll": true
     }
   ]
 }
