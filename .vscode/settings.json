@@ -1,5 +1,22 @@
-{
+﻿{
   "python.defaultInterpreterPath": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
   "python.terminal.activateEnvironment": true,
-  "python.analysis.extraPaths": ["${workspaceFolder}\\src\\backend\\ml"]
+  "python.analysis.extraPaths": ["${workspaceFolder}\\src\\backend\\ml"],
+  "typescript.tsdk": "node_modules/typescript/lib",
+  "typescript.enablePromptUseWorkspaceTsdk": true,
+  "tailwindCSS.includeLanguages": {
+    "typescript": "javascript",
+    "typescriptreact": "javascript",
+    "html": "html"
+  },
+  "editor.tabSize": 2,
+  "files.associations": {
+    "*.css": "tailwindcss"
+  },
+  "explorer.fileNesting.enabled": true,
+  "explorer.fileNesting.patterns": {
+    "package.json": "package-lock.json, tsconfig*.json, vite.config.ts, tailwind.config.js, postcss.config.js",
+    "index.html": "index.legacy.html",
+    ".env": ".env.*"
+  }
 }

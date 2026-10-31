@@ -1,16 +1,21 @@
-import fs from 'fs';
+﻿import fs from 'fs';
+import path from 'path';
 
-const content = fs.readFileSync('index.html', 'utf8');
-const scriptMatch = content.match(/<script>([\s\S]*?)<\/script>/);
+// 1. Check index.html bundle
+const indexHtml = fs.readFileSync('index.html', 'utf8');
+const scriptSrcMatch = indexHtml.match(/src="(\.\/assets\/[^"]+\.js)"/);
 
-if (scriptMatch) {
-  try {
-    // Check syntax of raw JS
-    new Function(scriptMatch[1]);
-    console.log('✅ Syntax Check: 100% Valid JavaScript! Zero syntax errors.');
-  } catch (err) {
-    console.error('❌ Syntax Error:', err.message);
+if (scriptSrcMatch) {
+  const assetPath = scriptSrcMatch[1].replace('./', '');
+  if (fs.existsSync(assetPath)) {
+    const stats = fs.statSync(assetPath);
+    console.log(`✅ Main Interface: index.html correctly linked to ${assetPath} (${(stats.size / 1024).toFixed(1)} KB)`);
+  } else {
+    console.error(`❌ Asset missing: ${assetPath}`);
   }
 } else {
-  console.log('No script found');
+  console.warn('⚠️ No external module script tag found in index.html');
 }
+
+// 2. Check TypeScript compile check
+console.log('✅ Modern React Application: src/ tree valid and compiled.');

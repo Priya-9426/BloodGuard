@@ -9,14 +9,24 @@
 
 The application is fully configured and ready to run:
 
-### Option 1: Run Local Server
+### Option 1: VS Code 1-Click Launch
+- Press `Ctrl + Shift + B` to build, or run tasks via `Terminal -> Run Task...`
+- Or press `F5` to start debugging services directly.
+
+### Option 2: Run Vite Dev Server (Hot Reload)
+```bash
+npm run dev
+```
+Then open: **[http://localhost:3000](http://localhost:3000)** in any browser.
+
+### Option 3: Run Local Server
 ```bash
 node server.js
 ```
 Then open: **[http://localhost:3000](http://localhost:3000)** in any browser.
 
-### Option 2: Direct File Launch
-Simply double-click `index.html` to launch the application directly in your browser without requiring any terminal commands or dependencies.
+### Option 4: Direct Launch in VS Code
+Open `index.html` with Live Server or open it directly in your browser.
 
 ---
 

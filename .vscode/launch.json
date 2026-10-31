@@ -1,0 +1,36 @@
+﻿{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Backend Server (Express)",
+      "skipFiles": ["<node_internals>/**"],
+      "program": "${workspaceFolder}/src/backend/server.js",
+      "cwd": "${workspaceFolder}/src/backend",
+      "env": {
+        "NODE_ENV": "development",
+        "PORT": "4000"
+      },
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Frontend Dev (Vite)",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Python ML Service (FastAPI)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["fraud_detector:app", "--host", "127.0.0.1", "--port", "5001", "--reload"],
+      "cwd": "${workspaceFolder}/src/backend/ml",
+      "console": "integratedTerminal"
+    }
+  ]
+}
