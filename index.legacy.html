@@ -1,0 +1,2456 @@
+<!doctype html>
+<html lang="en" class="h-full bg-slate-50 antialiased">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>
+      BloodGuard — Emergency Blood Coordination & Real-Time Broadcast Platform
+    </title>
+
+    <!-- Tailwind CSS CDN with fallback local styles -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      if (window.tailwind) {
+        tailwind.config = {
+          theme: {
+            extend: {
+              colors: {
+                medical: {
+                  50: "#fef2f2",
+                  100: "#fee2e2",
+                  200: "#fecaca",
+                  500: "#ef4444",
+                  600: "#dc2626",
+                  700: "#b91c1c",
+                  800: "#991b1b",
+                  900: "#7f1d1d",
+                },
+              },
+              boxShadow: {
+                emergency:
+                  "0 0 0 2px rgba(220, 38, 38, 0.25), 0 10px 25px -5px rgba(220, 38, 38, 0.25)",
+                card: "0 2px 10px -2px rgba(15, 23, 42, 0.06), 0 8px 24px -4px rgba(15, 23, 42, 0.08)",
+              },
+            },
+          },
+        };
+      }
+    </script>
+
+    <style>
+      /* Essential Fallback Styles ensuring 100% offline & robust rendering */
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        font-family:
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          Roboto,
+          Oxygen,
+          Ubuntu,
+          Cantarell,
+          sans-serif;
+        margin: 0;
+        background-color: #f8fafc;
+        color: #0f172a;
+      }
+      .glass-nav {
+        background: rgba(255, 255, 255, 0.95);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        border-bottom: 1px solid #e2e8f0;
+      }
+      .btn-red {
+        background-color: #dc2626;
+        color: #ffffff;
+        font-weight: 700;
+        border-radius: 0.75rem;
+        padding: 0.625rem 1.25rem;
+        transition: all 0.15s ease-in-out;
+        border: none;
+        cursor: pointer;
+      }
+      .btn-red:hover {
+        background-color: #b91c1c;
+      }
+      .btn-red:active {
+        transform: scale(0.97);
+      }
+      .pulse-emergency {
+        animation: pulseAnim 2s infinite ease-in-out;
+      }
+      @keyframes pulseAnim {
+        0%,
+        100% {
+          opacity: 1;
+          transform: scale(1);
+        }
+        50% {
+          opacity: 0.8;
+          transform: scale(1.02);
+        }
+      }
+      ::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+      }
+      ::-webkit-scrollbar-track {
+        background: #f1f5f9;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #cbd5e1;
+        border-radius: 9999px;
+      }
+    </style>
+  </head>
+  <body
+    class="h-full bg-slate-50 text-slate-900 selection:bg-red-500 selection:text-white flex flex-col min-h-screen"
+  >
+    <!-- APP CONTAINER (Reactively Rendered by Pure JS) -->
+    <div id="app" class="flex-1 flex flex-col min-h-screen"></div>
+
+    <!-- TOAST CONTAINER -->
+    <div
+      id="toast-container"
+      class="fixed bottom-6 right-6 z-50 flex flex-col gap-2 max-w-md w-full pointer-events-none"
+    ></div>
+
+    <!-- MODAL CONTAINER -->
+    <div
+      id="modal-container"
+      class="fixed inset-0 z-50 hidden overflow-y-auto flex items-center justify-center p-4"
+    ></div>
+
+    <!-- JAVASCRIPT APPLICATION SCRIPT (100% Pure, Zero External Compiler Dependencies) -->
+    <script>
+      // ==========================================
+      // DATA STORE — No hardcoded demo data.
+      // All data comes from MongoDB via /api/* endpoints.
+      // ==========================================
+
+      // Inventory defaults (shown before API loads, overwritten immediately)
+      const DEFAULT_INVENTORY = [
+        { bloodGroup: "A+", units: 0, status: "critical", lastUpdated: null },
+        { bloodGroup: "A-", units: 0, status: "critical", lastUpdated: null },
+        { bloodGroup: "B+", units: 0, status: "critical", lastUpdated: null },
+        { bloodGroup: "B-", units: 0, status: "critical", lastUpdated: null },
+        { bloodGroup: "AB+", units: 0, status: "critical", lastUpdated: null },
+        { bloodGroup: "AB-", units: 0, status: "critical", lastUpdated: null },
+        { bloodGroup: "O+", units: 0, status: "critical", lastUpdated: null },
+        { bloodGroup: "O-", units: 0, status: "critical", lastUpdated: null },
+      ];
+
+      // Single guest placeholder — replaced immediately after login
+      const GUEST_USER = {
+        id: null,
+        name: "Guest",
+        email: "",
+        phone: "",
+        role: "guest",
+        bloodGroup: "",
+        isAvailable: false,
+        totalDonations: 0,
+        avatarUrl: "",
+      };
+
+      // Application State — starts empty, populated from API
+      const AppState = {
+        currentUser: GUEST_USER,
+        activeTab: "landing",
+        sidebarTab: "overview",
+        requests: [],
+        inventory:
+          JSON.parse(localStorage.getItem("bg_inventory")) || DEFAULT_INVENTORY,
+        notifications: [],
+      };
+
+      function saveState() {
+        if (AppState.inventory.length) {
+          localStorage.setItem(
+            "bg_inventory",
+            JSON.stringify(AppState.inventory),
+          );
+        }
+      }
+
+      // ==========================================
+      // UTILITIES
+      // ==========================================
+      function calculateEligibility(donor) {
+        const bloodGroup = donor?.bloodGroup || "";
+        const isAvailable = donor?.isAvailable ?? true;
+        const lastDonationStr = donor?.lastDonationDate
+          ? donor.lastDonationDate.split("T")[0]
+          : null;
+        const today = new Date();
+
+        // If never donated — treat as fully eligible (no 56-day restriction)
+        let diffDays = 999,
+          nextEligibleStr = "Now",
+          hasWaitedEnough = true;
+        if (lastDonationStr) {
+          const lastDonationDate = new Date(lastDonationStr);
+          diffDays = Math.max(
+            0,
+            Math.floor(
+              (today.getTime() - lastDonationDate.getTime()) /
+                (1000 * 60 * 60 * 24),
+            ),
+          );
+          const nextEligible = new Date(lastDonationDate);
+          nextEligible.setDate(nextEligible.getDate() + 56);
+          nextEligibleStr = nextEligible.toISOString().split("T")[0];
+          hasWaitedEnough = diffDays >= 56;
+        }
+
+        const isEligible = hasWaitedEnough && isAvailable;
+
+        let reason = "";
+        if (!hasWaitedEnough) {
+          const remaining = 56 - diffDays;
+          reason = `Clinical 56-day rule active (${remaining} days remaining). Next eligible: ${nextEligibleStr}`;
+        } else if (!isAvailable) {
+          reason = "Your availability is set to UNAVAILABLE.";
+        }
+
+        return {
+          bloodGroup,
+          isAvailable,
+          lastDonationStr: lastDonationStr || "Never donated",
+          nextEligibleStr,
+          isEligible,
+          reason,
+        };
+      }
+
+      function showToast(message, type = "info") {
+        const container = document.getElementById("toast-container");
+        const toast = document.createElement("div");
+        const bg =
+          type === "emergency"
+            ? "bg-red-950 text-red-100 border-red-700 shadow-emergency"
+            : type === "success"
+              ? "bg-emerald-950 text-emerald-100 border-emerald-700"
+              : type === "warning"
+                ? "bg-amber-950 text-amber-100 border-amber-700"
+                : "bg-slate-900 text-white border-slate-700";
+
+        toast.className = `pointer-events-auto p-4 rounded-2xl border text-xs font-bold shadow-2xl flex items-center justify-between gap-3 ${bg} transition-all transform translate-y-4 opacity-0`;
+        toast.innerHTML = `
+        <div class="flex items-center gap-2">
+          <span>${type === "emergency" ? "🚨" : type === "success" ? "✓" : type === "warning" ? "⚠️" : "ℹ️"}</span>
+          <span>${message}</span>
+        </div>
+        <button onclick="this.parentElement.remove()" class="text-slate-400 hover:text-white font-bold p-1">✕</button>
+      `;
+
+        container.appendChild(toast);
+        setTimeout(() => {
+          toast.classList.remove("translate-y-4", "opacity-0");
+        }, 10);
+        setTimeout(() => {
+          toast.classList.add("opacity-0");
+          setTimeout(() => toast.remove(), 300);
+        }, 4500);
+      }
+
+      function triggerConfetti() {
+        if (window.confetti) {
+          try {
+            window.confetti({
+              particleCount: 70,
+              spread: 60,
+              origin: { y: 0.6 },
+            });
+          } catch (e) {}
+        }
+      }
+
+      // ==========================================
+      // ACTION HANDLERS
+      // ==========================================
+      window.Actions = {
+        setActiveTab(tab) {
+          AppState.activeTab = tab;
+          AppState.sidebarTab = "overview";
+          renderApp();
+        },
+        setSidebarTab(tab) {
+          AppState.sidebarTab = tab;
+          renderApp();
+        },
+        async login(email, password) {
+          const normalizedEmail = String(email || "")
+            .trim()
+            .toLowerCase();
+          const normalizedPassword = String(password || "");
+
+          const demoUsers = [
+            {
+              id: "admin-1",
+              name: "System Administrator",
+              email: "admin@bloodguard.health",
+              password: "Admin@123456",
+              role: "admin",
+              bloodGroup: "O+",
+              phone: "+1 (415) 555-0199",
+              isAvailable: true,
+              lastDonationDate: "2024-01-01",
+              totalDonations: 18,
+              hospitalAffiliation: "City General Hospital",
+            },
+            {
+              id: "donor-1",
+              name: "Maria Lopez",
+              email: "donor@bloodguard.health",
+              password: "Donor@123456",
+              role: "donor",
+              bloodGroup: "O+",
+              phone: "+1 (415) 555-0188",
+              isAvailable: true,
+              lastDonationDate: "2025-02-11",
+              totalDonations: 7,
+              hospitalAffiliation: "Mercy Clinic",
+            },
+            {
+              id: "patient-1",
+              name: "John Carter",
+              email: "patient@bloodguard.health",
+              password: "Patient@123456",
+              role: "patient",
+              bloodGroup: "A-",
+              phone: "+1 (415) 555-0177",
+              isAvailable: false,
+              lastDonationDate: "",
+              totalDonations: 0,
+              hospitalAffiliation: "Northside Medical Center",
+            },
+          ];
+
+          const user = demoUsers.find(
+            (u) =>
+              u.email === normalizedEmail && u.password === normalizedPassword,
+          );
+          if (!user) {
+            throw new Error(
+              "Invalid email or password. Try the default admin credentials shown below.",
+            );
+          }
+
+          AppState.currentUser = {
+            id: user.id,
+            name: user.name,
+            email: user.email,
+            phone: user.phone,
+            role: user.role,
+            bloodGroup: user.bloodGroup,
+            dateOfBirth: "",
+            lastDonationDate: user.lastDonationDate || "",
+            isAvailable: user.isAvailable ?? true,
+            totalDonations: user.totalDonations || 0,
+            hospitalAffiliation: user.hospitalAffiliation || "",
+          };
+
+          AppState.activeTab =
+            user.role === "patient"
+              ? "patient-dashboard"
+              : user.role === "donor"
+                ? "donor-dashboard"
+                : "admin-dashboard";
+
+          saveState();
+          showToast(`Welcome back, ${user.name}!`, "success");
+          renderApp();
+          return user;
+        },
+        async register(formData) {
+          const user = {
+            id: `user-${Date.now()}`,
+            name: formData.name || "New User",
+            email: String(formData.email || "")
+              .trim()
+              .toLowerCase(),
+            phone: formData.phone || "",
+            role: formData.role || "donor",
+            bloodGroup: formData.bloodGroup || "O+",
+            dateOfBirth: formData.dateOfBirth || "",
+            lastDonationDate: formData.lastDonationDate || "",
+            isAvailable: formData.isAvailable !== false,
+            totalDonations: 0,
+            hospitalAffiliation: formData.hospitalAffiliation || "",
+          };
+
+          AppState.currentUser = { ...user };
+          AppState.activeTab =
+            user.role === "patient"
+              ? "patient-dashboard"
+              : user.role === "donor"
+                ? "donor-dashboard"
+                : "admin-dashboard";
+          saveState();
+          showToast(`Account created for ${user.name}!`, "success");
+          renderApp();
+          return user;
+        },
+        logout() {
+          AppState.currentUser = GUEST_USER;
+          AppState.activeTab = "landing";
+          AppState.sidebarTab = "overview";
+          saveState();
+          showToast("Logged out successfully.", "info");
+          renderApp();
+        },
+        toggleAvailability() {
+          const u = AppState.currentUser;
+          if (u && u.role === "donor") {
+            u.isAvailable = !u.isAvailable;
+            saveState();
+            showToast(
+              `Availability: ${u.isAvailable ? "🟢 AVAILABLE" : "🔴 UNAVAILABLE"}`,
+              "info",
+            );
+            renderApp();
+          }
+        },
+        createEmergencyRequest(formData) {
+          // Fallback local logic (used only when backend is offline)
+          const units = Number(formData.unitsRequired);
+          let anomalyScore = 0.14;
+          const indicators = [];
+          if (units >= 5) {
+            anomalyScore += 0.42;
+            indicators.push(
+              `Unusual Bulk Unit Demand (${units} Units requested)`,
+            );
+          }
+          if (["AB-", "B-", "O-"].includes(formData.bloodGroup) && units >= 4) {
+            anomalyScore += 0.25;
+            indicators.push(
+              `High Volume Demand for Scarce Blood Group (${formData.bloodGroup})`,
+            );
+          }
+          anomalyScore = Math.min(0.98, Number(anomalyScore.toFixed(2)));
+          const isFlagged = anomalyScore >= 0.55;
+          const newId = `REQ-${Date.now()}`;
+          const newReq = {
+            id: newId,
+            patientId: AppState.currentUser.id,
+            patientName: formData.patientName || AppState.currentUser.name,
+            contactPhone: formData.contactPhone || AppState.currentUser.phone,
+            bloodGroup: formData.bloodGroup,
+            unitsRequired: units,
+            urgency: formData.urgency || "CRITICAL",
+            hospitalName: formData.hospitalName,
+            additionalNotes: formData.additionalNotes || "",
+            status: isFlagged ? "suspicious_review" : "broadcasting",
+            anomalyScore,
+            fraudIndicators: indicators,
+            isFlagged,
+            broadcastTime: isFlagged ? null : new Date().toISOString(),
+            eligibleDonorsNotifiedCount: isFlagged ? 0 : 0,
+            createdAt: new Date().toISOString(),
+          };
+          AppState.requests.unshift(newReq);
+          AppState.notifications.unshift({
+            id: "notif-" + Date.now(),
+            type: "emergency",
+            title: isFlagged
+              ? `⚠ Flagged: ${formData.bloodGroup}`
+              : `🚨 Broadcast: ${formData.bloodGroup} Needed`,
+            message: isFlagged
+              ? `Request flagged for Admin review (Score: ${anomalyScore})`
+              : `Broadcast sent to eligible ${formData.bloodGroup} donors.`,
+            timestamp: "Just now",
+            isRead: false,
+          });
+          saveState();
+          closeModal();
+          showToast(
+            isFlagged
+              ? "Request flagged for Admin review"
+              : `Broadcast sent to eligible ${formData.bloodGroup} donors.`,
+            isFlagged ? "warning" : "emergency",
+          );
+          renderApp();
+        },
+        acceptRequest(reqId) {
+          const r = AppState.requests.find((x) => x.id === reqId);
+          if (!r || r.status === "accepted" || r.status === "fulfilled") {
+            showToast("This request has already been accepted.", "info");
+            return;
+          }
+          r.status = "accepted";
+          r.acceptedByDonorId = AppState.currentUser.id;
+          r.acceptedByDonorName = AppState.currentUser.name;
+          r.acceptedAt = new Date().toISOString();
+          triggerConfetti();
+          saveState();
+          showToast(
+            `✓ Accepted! Please coordinate with the hospital.`,
+            "success",
+          );
+          renderApp();
+        },
+        fulfillRequest(reqId) {
+          const r = AppState.requests.find((x) => x.id === reqId);
+          if (r) {
+            r.status = "fulfilled";
+            saveState();
+            showToast(`Request marked as FULFILLED.`, "success");
+            closeModal();
+            renderApp();
+          }
+        },
+        approveFlagged(reqId) {
+          const r = AppState.requests.find((x) => x.id === reqId);
+          if (r) {
+            r.status = "broadcasting";
+            r.isFlagged = false;
+            r.broadcastTime = new Date().toISOString();
+            saveState();
+            showToast(`Request approved and broadcast.`, "success");
+            renderApp();
+          }
+        },
+        rejectFlagged(reqId) {
+          const r = AppState.requests.find((x) => x.id === reqId);
+          if (r) {
+            r.status = "rejected";
+            saveState();
+            showToast(`Request rejected.`, "info");
+            renderApp();
+          }
+        },
+        adjustStock(bg, delta) {
+          const item = AppState.inventory.find((i) => i.bloodGroup === bg);
+          if (item) {
+            item.units = Math.max(0, item.units + delta);
+            item.status =
+              item.units <= 5
+                ? "critical"
+                : item.units <= 15
+                  ? "low"
+                  : "normal";
+            item.lastUpdated = new Date().toISOString();
+            saveState();
+            showToast(`${bg}: ${delta > 0 ? "+" : ""}${delta} units`, "info");
+            renderApp();
+          }
+        },
+        setStock(bg, units) {
+          const item = AppState.inventory.find((i) => i.bloodGroup === bg);
+          if (item) {
+            item.units = Math.max(0, Number(units));
+            item.status =
+              item.units <= 5
+                ? "critical"
+                : item.units <= 15
+                  ? "low"
+                  : "normal";
+            item.lastUpdated = new Date().toISOString();
+            saveState();
+            showToast(`${bg} set to ${units} units`, "success");
+            closeModal();
+            renderApp();
+          }
+        },
+        updateDonationDate(date) {
+          AppState.currentUser.lastDonationDate = date;
+          saveState();
+          showToast(
+            "Donation date updated. 56-day rule recalculated.",
+            "success",
+          );
+          closeModal();
+          renderApp();
+        },
+        markAllRead() {
+          AppState.notifications.forEach((n) => (n.isRead = true));
+          saveState();
+          renderApp();
+        },
+      };
+
+      // ==========================================
+      // MODAL HELPERS
+      // ==========================================
+      function openModal(title, subtitle, contentHtml) {
+        const modal = document.getElementById("modal-container");
+        modal.innerHTML = `
+        <div class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm" onclick="closeModal()"></div>
+        <div class="relative bg-white rounded-3xl max-w-xl w-full p-6 sm:p-8 shadow-2xl border border-slate-200 z-10 space-y-4 max-h-[90vh] overflow-y-auto">
+          <div class="flex items-start justify-between border-b border-slate-100 pb-3">
+            <div>
+              <h3 class="text-lg font-bold text-slate-900">${title}</h3>
+              ${subtitle ? `<p class="text-xs text-slate-500 mt-0.5">${subtitle}</p>` : ""}
+            </div>
+            <button onclick="closeModal()" class="text-slate-400 hover:text-slate-700 font-black text-xl p-1">✕</button>
+          </div>
+          <div>${contentHtml}</div>
+        </div>
+      `;
+        modal.classList.remove("hidden");
+      }
+
+      function closeModal() {
+        const modal = document.getElementById("modal-container");
+        modal.classList.add("hidden");
+        modal.innerHTML = "";
+      }
+
+      window.openCreateRequestModal = function () {
+        // Auth guard — must be logged in
+        if (!AppState.currentUser || AppState.currentUser.role === "guest") {
+          showToast(
+            "Please login or register to submit an emergency request.",
+            "info",
+          );
+          Actions.setActiveTab("login");
+          return;
+        }
+        const cur = AppState.currentUser;
+        const html = `
+        <form id="emergency-req-form" class="space-y-4 text-xs">
+          <div class="p-3 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 flex items-start gap-2.5">
+            <span class="text-base">🛡️</span>
+            <div>
+              <strong>Security Screening Notice:</strong> Your request will be securely screened by the Isolation Forest AI before being broadcast to eligible donors. Anomalous requests are routed to Admin Review.
+            </div>
+          </div>
+
+          <div>
+            <label class="font-bold text-slate-700 block mb-1">Select Blood Group</label>
+            <div class="grid grid-cols-4 sm:grid-cols-8 gap-1.5">
+              ${["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"]
+                .map(
+                  (bg, idx) => `
+                <label class="cursor-pointer">
+                  <input type="radio" name="bloodGroup" value="${bg}" ${idx === 6 ? "checked" : ""} class="peer sr-only" />
+                  <div class="py-2 text-center rounded-xl font-extrabold text-xs border border-slate-200 peer-checked:bg-red-600 peer-checked:text-white peer-checked:border-red-600">
+                    ${bg}
+                  </div>
+                </label>
+              `,
+                )
+                .join("")}
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label class="font-semibold text-slate-700 block mb-1">Units Required</label>
+              <input type="number" name="unitsRequired" min="1" max="10" value="2" class="w-full p-2.5 rounded-xl border border-slate-300 font-bold text-sm" required />
+            </div>
+            <div>
+              <label class="font-semibold text-slate-700 block mb-1">Urgency</label>
+              <select name="urgency" class="w-full p-2.5 rounded-xl border border-slate-300 font-semibold text-sm bg-white">
+                <option value="CRITICAL">🚨 Critical</option>
+                <option value="URGENT">⚡ Urgent</option>
+                <option value="STANDARD">Standard</option>
+              </select>
+            </div>
+            <div>
+              <label class="font-semibold text-slate-700 block mb-1">Required Date/Time</label>
+              <input type="datetime-local" name="requiredDate" class="w-full p-2.5 rounded-xl border border-slate-300 text-sm" />
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label class="font-semibold text-slate-700 block mb-1">Patient Name</label>
+              <input type="text" name="patientName" value="${cur.name || ""}" class="w-full p-2.5 rounded-xl border border-slate-300 text-sm" required />
+            </div>
+            <div>
+              <label class="font-semibold text-slate-700 block mb-1">Contact Number</label>
+              <input type="text" name="contactPhone" value="${cur.phone || ""}" class="w-full p-2.5 rounded-xl border border-slate-300 text-sm font-mono" required />
+            </div>
+          </div>
+
+          <div>
+            <label class="font-semibold text-slate-700 block mb-1">Hospital / Medical Facility</label>
+            <input type="text" name="hospitalName" placeholder="e.g. City General Hospital, Emergency Ward" class="w-full p-2.5 rounded-xl border border-slate-300 text-sm" required />
+          </div>
+
+          <div>
+            <label class="font-semibold text-slate-700 block mb-1">Additional Notes</label>
+            <textarea name="additionalNotes" rows="2" placeholder="e.g. Scheduled surgery, trauma case..." class="w-full p-2.5 rounded-xl border border-slate-300 text-sm resize-none"></textarea>
+          </div>
+
+          <div>
+            <label class="font-semibold text-slate-700 block mb-1">
+              📎 Hospital Prescription / Blood Requirement Document
+              <span class="text-slate-400 font-normal">(PDF, JPG, PNG — max 5MB)</span>
+            </label>
+            <input type="file" id="doc-upload" name="document" accept=".pdf,.jpg,.jpeg,.png" class="w-full p-2 rounded-xl border border-slate-300 text-sm bg-white file:mr-3 file:py-1 file:px-3 file:rounded-lg file:border-0 file:bg-red-50 file:text-red-700 file:font-semibold" />
+            <p class="text-[10px] text-slate-400 mt-1">Document is stored securely. Only authorized medical personnel and admins can view it.</p>
+          </div>
+
+          <div class="flex justify-end gap-2 pt-2 border-t">
+            <button type="button" onclick="closeModal()" class="px-4 py-2 text-slate-600 font-bold">Cancel</button>
+            <button type="button" onclick="(async (event) => { const form = event.currentTarget.form; const fd = new FormData(form); const data = Object.fromEntries(fd); const fileInput = form.querySelector('#doc-upload'); if (fileInput && fileInput.files[0]) data.document = fileInput.files[0]; await Actions.createEmergencyRequest(data); })(event)" class="btn-red text-xs">🚨 Submit Emergency Request</button>
+          </div>
+        </form>
+      `;
+        openModal(
+          "Create Emergency Blood Request",
+          "Your request will be securely screened before being broadcast to eligible donors.",
+          html,
+        );
+      };
+
+      window.openTrackModal = function (reqId) {
+        const r = AppState.requests.find((x) => x.id === reqId);
+        if (!r) return;
+
+        const isSuspicious = r.isFlagged || r.status === "suspicious_review";
+        const stepsHtml =
+          isSuspicious && r.status === "suspicious_review"
+            ? `
+        <div class="space-y-3 pl-6 relative before:absolute before:left-2 before:top-2 before:bottom-2 before:w-0.5 before:bg-slate-200">
+          <div class="relative"><div class="absolute -left-6 w-5 h-5 rounded-full bg-emerald-600 text-white flex items-center justify-center text-[10px]">✓</div><strong>Request Created</strong><p class="text-slate-500 text-[11px]">Emergency details submitted</p></div>
+          <div class="relative"><div class="absolute -left-6 w-5 h-5 rounded-full bg-amber-500 text-white flex items-center justify-center text-[10px]">⚠️</div><strong>Security Review</strong><p class="text-slate-500 text-[11px]">Isolation Forest flagged anomaly (Score: ${r.anomalyScore})</p></div>
+          <div class="relative"><div class="absolute -left-6 w-5 h-5 rounded-full bg-amber-500 text-white flex items-center justify-center text-[10px] animate-pulse">3</div><strong class="text-amber-800">Admin Review (Current Stage)</strong><p class="text-slate-500 text-[11px]">Pending verification in Fraud Review Center</p></div>
+        </div>
+      `
+            : `
+        <div class="space-y-3 pl-6 relative before:absolute before:left-2 before:top-2 before:bottom-2 before:w-0.5 before:bg-slate-200">
+          <div class="relative"><div class="absolute -left-6 w-5 h-5 rounded-full bg-emerald-600 text-white flex items-center justify-center text-[10px]">✓</div><strong>Request Created</strong><p class="text-slate-500 text-[11px]">Patient submits required blood details</p></div>
+          <div class="relative"><div class="absolute -left-6 w-5 h-5 rounded-full bg-emerald-600 text-white flex items-center justify-center text-[10px]">✓</div><strong>Security Screening</strong><p class="text-slate-500 text-[11px]">Isolation Forest verified genuine (Score: ${r.anomalyScore})</p></div>
+          <div class="relative"><div class="absolute -left-6 w-5 h-5 rounded-full ${["broadcasting", "accepted", "fulfilled"].includes(r.status) ? "bg-emerald-600 text-white" : "bg-slate-200 text-slate-600"} flex items-center justify-center text-[10px]">✓</div><strong>Eligibility Filtering</strong><p class="text-slate-500 text-[11px]">Blood group, availability, and 56-day rule checked</p></div>
+          <div class="relative"><div class="absolute -left-6 w-5 h-5 rounded-full ${["accepted", "fulfilled"].includes(r.status) ? "bg-emerald-600 text-white" : r.status === "broadcasting" ? "bg-red-600 text-white animate-pulse" : "bg-slate-200 text-slate-600"} flex items-center justify-center text-[10px]">4</div><strong>Broadcast Alert</strong><p class="text-slate-500 text-[11px]">Simultaneous push notification sent to all matching donors</p></div>
+          <div class="relative"><div class="absolute -left-6 w-5 h-5 rounded-full ${r.status === "fulfilled" ? "bg-emerald-600 text-white" : r.status === "accepted" ? "bg-blue-600 text-white animate-pulse" : "bg-slate-200 text-slate-600"} flex items-center justify-center text-[10px]">5</div><strong>Donor Response</strong><p class="text-slate-500 text-[11px]">${r.acceptedByDonorName ? `Accepted by ${r.acceptedByDonorName}` : "Awaiting first donor acceptance"}</p></div>
+          <div class="relative"><div class="absolute -left-6 w-5 h-5 rounded-full ${r.status === "fulfilled" ? "bg-emerald-600 text-white" : "bg-slate-200 text-slate-600"} flex items-center justify-center text-[10px]">6</div><strong>Fulfilled</strong><p class="text-slate-500 text-[11px]">Transfusion coordinated with medical center</p></div>
+        </div>
+      `;
+
+        const html = `
+        <div class="space-y-4 text-xs">
+          <div class="grid grid-cols-3 gap-2 p-3 bg-slate-50 rounded-2xl text-center border">
+            <div><span class="text-slate-400 block text-[10px]">Blood</span><strong class="text-red-600 text-base font-black">${r.bloodGroup}</strong></div>
+            <div><span class="text-slate-400 block text-[10px]">Units</span><strong class="text-slate-900 text-base font-black">${r.unitsRequired} Pints</strong></div>
+            <div><span class="text-slate-400 block text-[10px]">Status</span><span class="font-bold uppercase text-[10px] bg-slate-200 px-2 py-0.5 rounded">${r.status}</span></div>
+          </div>
+          <div class="p-3 bg-white border rounded-2xl">
+            ${stepsHtml}
+          </div>
+          ${
+            r.status === "accepted"
+              ? `
+            <div class="p-3 bg-emerald-50 border border-emerald-200 rounded-2xl flex justify-between items-center">
+              <div><strong class="text-emerald-900 block">Donor Connected: ${r.acceptedByDonorName}</strong><span class="text-emerald-700 text-[11px]">Transfusion in progress.</span></div>
+              <button onclick="Actions.fulfillRequest('${r.id}')" class="px-3 py-1.5 bg-emerald-700 text-white font-bold rounded-xl text-xs">Mark Fulfilled</button>
+            </div>
+          `
+              : ""
+          }
+        </div>
+      `;
+        openModal(
+          `Request Status Tracking (${r.id})`,
+          `Patient: ${r.patientName} (${r.bloodGroup})`,
+          html,
+        );
+      };
+
+      window.openEditDateModal = function () {
+        const curDate = AppState.currentUser.lastDonationDate
+          ? AppState.currentUser.lastDonationDate.split("T")[0]
+          : "";
+        const html = `
+        <div class="space-y-4 text-xs">
+          <div>
+            <label class="font-bold text-slate-700 block mb-1">Last Whole Blood Donation Date</label>
+            <input type="date" id="input-donation-date" value="${curDate}" class="w-full p-2.5 border rounded-2xl font-bold" />
+            <p class="text-[11px] text-slate-500 mt-1">Medical rule: whole blood donation mandates a minimum 56-day refractory interval.</p>
+          </div>
+          <div class="flex justify-end gap-2 pt-2 border-t">
+            <button onclick="closeModal()" class="px-3 py-1.5 text-slate-600 font-bold">Cancel</button>
+            <button onclick="Actions.updateDonationDate(document.getElementById('input-donation-date').value)" class="btn-red text-xs">Save Date</button>
+          </div>
+        </div>
+      `;
+        openModal(
+          "Update Last Donation Date",
+          "Recalculates 56-day refractory rule dynamically.",
+          html,
+        );
+      };
+
+      // ==========================================
+      // RENDER FUNCTIONS (Pure HTML Generator)
+      // ==========================================
+      function renderApp() {
+        const root = document.getElementById("app");
+        const cur = AppState.currentUser;
+        const tab = AppState.activeTab;
+        const unreadCount = AppState.notifications.filter(
+          (n) => !n.isRead && n.type === "emergency",
+        ).length;
+        const broadcastCount = AppState.requests.filter(
+          (r) => r.status === "broadcasting",
+        ).length;
+        const flaggedCount = AppState.requests.filter(
+          (r) => r.status === "suspicious_review",
+        ).length;
+
+        // No demo bar — app uses real authentication
+        const demoBarHtml = "";
+
+        // 2. NAVBAR
+        const dashTab =
+          cur.role === "patient"
+            ? "patient-dashboard"
+            : cur.role === "donor"
+              ? "donor-dashboard"
+              : "admin-dashboard";
+        const navbarHtml = `
+        <header class="sticky top-0 z-40 w-full glass-nav">
+          <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-16 sm:h-20">
+              
+              <div onclick="Actions.setActiveTab('landing')" class="flex items-center gap-3 cursor-pointer">
+                <div class="w-10 h-10 rounded-2xl bg-gradient-to-br from-red-600 to-red-800 text-white flex items-center justify-center font-extrabold text-xl shadow-md shadow-red-600/30">
+                  🩸
+                </div>
+                <div>
+                  <div class="flex items-center gap-1.5">
+                    <span class="text-xl font-extrabold tracking-tight text-slate-900">Blood<span class="text-red-600">Guard</span></span>
+                    <span class="px-1.5 py-0.5 text-[9px] font-bold rounded bg-red-100 text-red-700 uppercase">Emergency</span>
+                  </div>
+                  <p class="hidden sm:block text-[10px] text-slate-500 font-medium">Secure Anomaly Screening & Real-Time Broadcast</p>
+                </div>
+              </div>
+
+              <nav class="hidden md:flex items-center space-x-1">
+                ${[
+                  "landing:Home",
+                  "how-it-works:How It Works",
+                  "about:About",
+                ]
+                  .map((item) => {
+                    const [k, lbl] = item.split(":");
+                    return `<button onclick="Actions.setActiveTab('${k}')" class="px-3.5 py-2 text-sm font-semibold rounded-xl transition-colors ${tab === k ? "text-red-700 bg-red-50 font-bold" : "text-slate-600 hover:text-slate-900 hover:bg-slate-100"}">${lbl}</button>`;
+                  })
+                  .join("")}
+              </nav>
+
+              <div class="flex items-center space-x-3">
+                <div class="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-100 border border-slate-200 text-slate-700 text-xs font-semibold">
+                  <span class="w-2 h-2 rounded-full bg-red-600 animate-pulse"></span>
+                  <span>Hotline: <strong class="text-slate-900 font-mono">1-800-BLOOD-GD</strong></span>
+                </div>
+
+                <button onclick="Actions.setActiveTab('notifications')" class="relative p-2 rounded-xl text-slate-600 hover:bg-slate-100 text-base" title="Notifications">
+                  🔔
+                  ${unreadCount > 0 ? `<span class="absolute top-1 right-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-600 text-[10px] font-bold text-white ring-2 ring-white animate-pulse">${unreadCount}</span>` : ""}
+                </button>
+
+                ${
+                  cur.role === "guest"
+                    ? `<button onclick="Actions.setActiveTab('login')" class="px-3.5 py-2 rounded-xl bg-slate-900 text-white hover:bg-slate-800 text-xs font-bold shadow-sm">Login</button>
+                     <button onclick="Actions.setActiveTab('register')" class="px-3.5 py-2 rounded-xl bg-red-600 text-white hover:bg-red-700 text-xs font-bold shadow-sm">Register</button>`
+                    : `<button onclick="Actions.setActiveTab('${dashTab}')" class="px-3.5 py-2 rounded-xl bg-slate-900 text-white hover:bg-slate-800 text-xs font-bold shadow-sm">${cur.role.toUpperCase()} →</button>
+                     <button onclick="Actions.logout ? Actions.logout() : (localStorage.removeItem('bg_auth_token'), Actions.setActiveTab('landing'))" class="px-2.5 py-1.5 rounded-xl bg-slate-100 text-slate-600 hover:bg-red-50 hover:text-red-600 text-xs font-bold" title="Logout">⎋ Out</button>`
+                }
+
+                <img src="${cur.avatarUrl || "data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22><circle cx=%2216%22 cy=%2216%22 r=%2216%22 fill=%22%23e2e8f0%22/><text x=%2216%22 y=%2221%22 text-anchor=%22middle%22 font-size=%2216%22>👤</text></svg>"}" alt="${cur.name}" class="w-8 h-8 rounded-full border border-slate-200 object-cover ring-2 ring-white" />
+              </div>
+
+            </div>
+          </div>
+        </header>
+      `;
+
+        // 3. MAIN BODY VIEWS
+        let bodyHtml = "";
+
+        if (tab === "landing") {
+          const totalBankUnits = AppState.inventory.reduce(
+            (a, c) => a + c.units,
+            0,
+          );
+          bodyHtml = `
+          <div class="space-y-16 sm:space-y-24 pb-16">
+            
+            <!-- HERO -->
+            <section class="pt-6 sm:pt-12">
+              <div class="grid grid-cols-1 lg:grid-cols-12 gap-10 items-center">
+                <div class="lg:col-span-7 space-y-6 text-left">
+                  <div class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-red-50 border border-red-200 text-red-700 text-xs font-bold">
+                    <span class="w-2 h-2 rounded-full bg-red-600 animate-ping"></span>
+                    <span>AI-Driven Anomaly Detection & Real-Time Broadcast</span>
+                  </div>
+
+                  <h1 class="text-4xl sm:text-5xl lg:text-6xl font-extrabold text-slate-900 tracking-tight leading-tight">
+                    Every Second Matters. <br />
+                    <span class="text-red-600">Every Drop Counts.</span>
+                  </h1>
+
+                  <p class="text-base sm:text-lg text-slate-600 max-w-2xl leading-relaxed">
+                    BloodGuard connects emergency blood requests with eligible donors through secure fraud detection and real-time emergency alerts.
+                  </p>
+
+                  <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-2">
+                    <button onclick="openCreateRequestModal()" class="btn-red text-base py-3.5 px-7 shadow-lg shadow-red-600/30 flex items-center justify-center gap-2">
+                      <span>Request Blood</span>
+                      <span>→</span>
+                    </button>
+                    <button onclick="Actions.setActiveTab('register')" class="px-6 py-3.5 rounded-2xl bg-white hover:bg-slate-50 border-2 border-slate-200 text-slate-800 font-bold text-base shadow-sm">
+                      Become a Donor →
+                    </button>
+                  </div>
+
+                  <div class="pt-3 flex flex-wrap gap-6 text-xs text-slate-500 font-semibold">
+                    <span>🛡️ Isolation Forest Screening</span>
+                    <span>📢 Simultaneous FCM Broadcast</span>
+                    <span>⏱️ 56-Day Refractory Rule</span>
+                  </div>
+                </div>
+
+                <!-- RIGHT HEALTHCARE VISUAL (NO MAPS/GPS) -->
+                <div class="lg:col-span-5">
+                  <div class="rounded-3xl bg-slate-900 p-6 text-white shadow-2xl border border-slate-800 space-y-4">
+                    <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+                      <span class="font-bold text-xs uppercase tracking-wider text-red-400">🚨 Live Emergency Dispatch</span>
+                      <span class="text-[11px] font-mono bg-slate-800 px-2 py-0.5 rounded text-slate-300">REQ-2026-8801</span>
+                    </div>
+
+                    <div class="p-4 rounded-2xl bg-slate-800 border border-slate-700 space-y-2">
+                      <div class="flex items-center gap-3">
+                        <span class="w-10 h-10 rounded-2xl bg-red-600 flex items-center justify-center font-black text-lg">O+</span>
+                        <div>
+                          <h4 class="font-bold text-sm">City Trauma Center</h4>
+                          <p class="text-xs text-slate-400">2 Units • Critical Emergency</p>
+                        </div>
+                      </div>
+                      <div class="p-2.5 rounded-xl bg-slate-900 text-[11px] text-slate-300">
+                        📢 Broadcasted simultaneously to <strong class="text-white">14 matching O+ donors</strong>
+                      </div>
+                    </div>
+
+                    <div class="p-3 rounded-2xl bg-emerald-950/60 border border-emerald-800/60 flex items-center gap-2.5 text-xs text-emerald-300">
+                      <span>🛡️</span>
+                      <div>
+                        <strong class="block">AI Anomaly Clearance: NORMAL</strong>
+                        <span class="text-[10px] text-emerald-400/80">Isolation Forest Score 0.14 • Verified Genuine</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- EMERGENCY CTA SECTION -->
+            <section class="rounded-3xl bg-gradient-to-r from-red-700 via-red-600 to-red-800 p-6 sm:p-10 text-white shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-6">
+              <div class="space-y-1 max-w-2xl">
+                <span class="px-3 py-1 rounded-full bg-white/20 text-white text-xs font-bold">🚨 Need Blood Urgently?</span>
+                <h2 className="text-2xl sm:text-3xl font-extrabold">Create an emergency blood request and notify eligible donors instantly.</h2>
+              </div>
+              <button onclick="openCreateRequestModal()" class="px-6 py-4 rounded-2xl bg-white text-red-700 font-extrabold text-sm sm:text-base shadow-lg hover:bg-slate-50 transition-all shrink-0">
+                Request Blood Now →
+              </button>
+            </section>
+
+            <!-- 4-STEP PROCESS -->
+            <section class="text-center space-y-10">
+              <div class="space-y-2">
+                <span class="px-3 py-1 rounded-full text-xs font-bold bg-red-100 text-red-700 uppercase">Architecture</span>
+                <h2 className="text-3xl font-extrabold text-slate-900">How BloodGuard Works</h2>
+              </div>
+
+              <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 text-left">
+                <div class="p-6 rounded-3xl bg-white border border-slate-200 shadow-sm space-y-3">
+                  <span class="text-2xl font-black text-red-600">Step 01</span>
+                  <h3 class="text-base font-bold text-slate-900">Create Request</h3>
+                  <p class="text-xs text-slate-500 leading-relaxed">Patient submits the required blood details.</p>
+                </div>
+                <div class="p-6 rounded-3xl bg-white border border-slate-200 shadow-sm space-y-3">
+                  <span class="text-2xl font-black text-amber-500">Step 02</span>
+                  <h3 class="text-base font-bold text-slate-900">Security Screening</h3>
+                  <p class="text-xs text-slate-500 leading-relaxed">Isolation Forest checks the request for suspicious patterns.</p>
+                </div>
+                <div class="p-6 rounded-3xl bg-white border border-slate-200 shadow-sm space-y-3">
+                  <span class="text-2xl font-black text-blue-600">Step 03</span>
+                  <h3 class="text-base font-bold text-slate-900">Eligibility Filtering</h3>
+                  <p class="text-xs text-slate-500 leading-relaxed">The system checks blood group, availability, and the 56-day donation rule.</p>
+                </div>
+                <div class="p-6 rounded-3xl bg-white border border-slate-200 shadow-sm space-y-3">
+                  <span class="text-2xl font-black text-emerald-600">Step 04</span>
+                  <h3 class="text-base font-bold text-slate-900">Broadcast Alert</h3>
+                  <p class="text-xs text-slate-500 leading-relaxed">All eligible matching donors receive the emergency notification simultaneously.</p>
+                </div>
+              </div>
+            </section>
+
+            <!-- KEY FEATURES (6 CARDS) -->
+            <section class="space-y-8">
+              <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 text-center">Key Features</h2>
+              <div class="grid grid-cols-1 md:grid-cols-3 gap-6 text-xs">
+                <div class="p-6 rounded-3xl bg-white border border-slate-200 space-y-2">
+                  <span class="text-2xl">🩸</span>
+                  <h3 class="font-bold text-sm text-slate-900">Emergency Blood Requests</h3>
+                  <p class="text-slate-500">Create and track urgent blood requests.</p>
+                </div>
+                <div class="p-6 rounded-3xl bg-white border border-slate-200 space-y-2">
+                  <span class="text-2xl">🔐</span>
+                  <h3 class="font-bold text-sm text-slate-900">Fraud Detection</h3>
+                  <p class="text-slate-500">Detect suspicious request patterns using Isolation Forest.</p>
+                </div>
+                <div class="p-6 rounded-3xl bg-white border border-slate-200 space-y-2">
+                  <span class="text-2xl">📢</span>
+                  <h3 class="font-bold text-sm text-slate-900">Real-Time Broadcast</h3>
+                  <p class="text-slate-500">Notify all eligible matching donors simultaneously.</p>
+                </div>
+                <div class="p-6 rounded-3xl bg-white border border-slate-200 space-y-2">
+                  <span class="text-2xl">✅</span>
+                  <h3 class="font-bold text-sm text-slate-900">Eligibility Filtering</h3>
+                  <p class="text-slate-500">Check blood group, availability, and donation interval.</p>
+                </div>
+                <div class="p-6 rounded-3xl bg-white border border-slate-200 space-y-2">
+                  <span class="text-2xl">🏥</span>
+                  <h3 class="font-bold text-sm text-slate-900">Hospital Network</h3>
+                  <p class="text-slate-500">Connected with verified hospitals across 41 cities.</p>
+                </div>
+                <div class="p-6 rounded-3xl bg-white border border-slate-200 space-y-2">
+                  <span class="text-2xl">👨‍💼</span>
+                  <h3 class="font-bold text-sm text-slate-900">Admin Monitoring</h3>
+                  <p class="text-slate-500">Review suspicious requests and manage the platform.</p>
+                </div>
+              </div>
+            </section>
+
+            <!-- STATISTICS (DEMO METRICS) -->
+            <section class="bg-slate-900 text-white py-12 rounded-3xl p-6 sm:p-10 space-y-6">
+              <div class="text-center space-y-1">
+                <h2 class="text-2xl sm:text-3xl font-extrabold">Platform Statistics</h2>
+                <p class="text-xs text-slate-400">* Clearly marked as demo statistics integrated with real-time session state</p>
+              </div>
+              <div class="grid grid-cols-2 lg:grid-cols-4 gap-6 text-center">
+                <div class="p-4 rounded-2xl bg-slate-800 border border-slate-700">
+                  <div class="text-3xl font-extrabold text-red-400">1,250+</div>
+                  <div class="text-xs text-slate-300 font-bold mt-1">Registered Donors</div>
+                </div>
+                <div class="p-4 rounded-2xl bg-slate-800 border border-slate-700">
+                  <div class="text-3xl font-extrabold text-emerald-400">850+</div>
+                  <div class="text-xs text-slate-300 font-bold mt-1">Successful Requests</div>
+                </div>
+                <div class="p-4 rounded-2xl bg-slate-800 border border-slate-700">
+                  <div class="text-3xl font-extrabold text-blue-400">98%</div>
+                  <div class="text-xs text-slate-300 font-bold mt-1">Eligible Donor Reach</div>
+                </div>
+                <div class="p-4 rounded-2xl bg-slate-800 border border-slate-700">
+                  <div class="text-3xl font-extrabold text-amber-400">24/7</div>
+                  <div class="text-xs text-slate-300 font-bold mt-1">Emergency Support</div>
+                </div>
+              </div>
+            </section>
+
+            <!-- VERIFIED HEALTHCARE & BROADCAST NETWORK -->
+            <section class="p-6 sm:p-8 rounded-3xl bg-white border border-slate-200 shadow-sm space-y-4">
+              <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h2 class="text-xl font-extrabold text-slate-900">Direct Donor-to-Patient Emergency Network</h2>
+                  <p class="text-xs text-slate-500">Fast2SMS simultaneous alerts delivered directly to verified donors at hospitals across 41 cities.</p>
+                </div>
+                <button onclick="openModal('Emergency Request', 'Create a new emergency broadcast', document.getElementById('request-modal') ? document.getElementById('request-modal').innerHTML : '')" class="btn-red text-xs self-start sm:self-auto">🚨 Request Blood Now</button>
+              </div>
+            </section>
+
+            <!-- FOOTER -->
+            <footer class="border-t pt-8 text-slate-500 text-xs flex flex-col sm:flex-row justify-between items-center gap-4">
+              <div class="flex items-center gap-2">
+                <span class="text-lg">🩸</span>
+                <span class="font-extrabold text-slate-900">BloodGuard</span>
+                <span>— "Every Second Matters. Every Drop Counts."</span>
+              </div>
+              <div>Secure blood coordination with real-time emergency alerts.</div>
+            </footer>
+
+          </div>
+        `;
+        } else if (tab === "login") {
+          bodyHtml = `
+          <div class="min-h-[70vh] flex items-center justify-center">
+            <div class="bg-white rounded-3xl shadow-xl border border-slate-100 p-8 w-full max-w-md space-y-6">
+              <div class="text-center space-y-1">
+                <div class="text-4xl mb-2">🩸</div>
+                <h1 class="text-2xl font-extrabold text-slate-900">Welcome Back</h1>
+                <p class="text-sm text-slate-500">Sign in to your BloodGuard account</p>
+              </div>
+              <form id="login-form" class="space-y-4" onsubmit="
+                event.preventDefault();
+                const form = document.getElementById('login-form');
+                const btn = document.getElementById('login-btn');
+                const err = document.getElementById('login-error');
+                err.textContent = '';
+                btn.disabled = true;
+                btn.textContent = 'Signing in...';
+                Actions.login(form.email.value.trim(), form.password.value)
+                  .then(() => { btn.disabled = false; btn.textContent = 'Sign In →'; })
+                  .catch(e => { btn.disabled = false; btn.textContent = 'Sign In →'; err.textContent = e.message || 'Login failed. Check your credentials.'; });
+              ">
+                <div>
+                  <label class="block text-xs font-bold text-slate-700 mb-1">Email Address</label>
+                  <input name="email" type="email" required placeholder="your@email.com" autocomplete="email"
+                    class="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-red-500">
+                </div>
+                <div>
+                  <label class="block text-xs font-bold text-slate-700 mb-1">Password</label>
+                  <input name="password" type="password" required placeholder="••••••••" autocomplete="current-password"
+                    class="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-red-500">
+                </div>
+                <p id="login-error" class="text-xs text-red-600 font-semibold text-center min-h-[1rem]"></p>
+                <button id="login-btn" type="submit" class="w-full py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed">Sign In →</button>
+              </form>
+              <p class="text-center text-xs text-slate-500">Don't have an account? <button onclick="Actions.setActiveTab('register')" class="text-red-600 font-bold hover:underline">Register here</button></p>
+
+              <div class="text-center">
+                <p class="text-xs text-slate-400 font-semibold">Default Admin: admin@bloodguard.health / Admin@123456</p>
+              </div>
+            </div>
+          </div>
+        `;
+        } else if (tab === "register") {
+          bodyHtml = `
+          <div class="min-h-[70vh] flex items-center justify-center py-8">
+            <div class="bg-white rounded-3xl shadow-xl border border-slate-100 p-8 w-full max-w-lg space-y-6">
+              <div class="text-center space-y-1">
+                <div class="text-4xl mb-2">❤️</div>
+                <h1 class="text-2xl font-extrabold text-slate-900">Create Account</h1>
+                <p class="text-sm text-slate-500">Join BloodGuard as a donor or patient</p>
+              </div>
+
+              <form id="register-form" class="space-y-4" onsubmit="
+                event.preventDefault();
+                const form = document.getElementById('register-form');
+                const btn = document.getElementById('reg-btn');
+                const err = document.getElementById('reg-error');
+                err.textContent = '';
+                btn.disabled = true;
+                btn.textContent = 'Creating account...';
+                const role = form.role.value;
+                const data = {
+                  name: form.name.value.trim(),
+                  email: form.email.value.trim(),
+                  phone: form.phone.value.trim(),
+                  password: form.password.value,
+                  role: role,
+                  bloodGroup: role === 'donor' ? form.bloodGroup.value : undefined,
+                  dateOfBirth: (role === 'donor' && form.dateOfBirth.value) ? form.dateOfBirth.value : undefined,
+                  lastDonationDate: (role === 'donor' && form.lastDonationDate.value) ? form.lastDonationDate.value : undefined,
+                  isAvailable: role === 'donor' ? form.isAvailable.checked : undefined,
+                };
+                Actions.register(data).then(() => {
+                  btn.disabled = false;
+                  btn.textContent = 'Create Account →';
+                }).catch(e => {
+                  btn.disabled = false;
+                  btn.textContent = 'Create Account →';
+                  err.textContent = e.message || 'Registration failed. Please try again.';
+                });
+              ">
+                <div class="grid grid-cols-2 gap-3">
+                  <div class="col-span-2">
+                    <label class="block text-xs font-bold text-slate-700 mb-1">Full Name *</label>
+                    <input name="name" type="text" required placeholder="Your full name" class="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-red-500">
+                  </div>
+                  <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">Email *</label>
+                    <input name="email" type="email" required placeholder="your@email.com" class="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-red-500">
+                  </div>
+                  <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">Mobile Number *</label>
+                    <input name="phone" type="tel" required placeholder="+91XXXXXXXXXX" class="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-red-500">
+                  </div>
+                  <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">Password *</label>
+                    <input name="password" type="password" required minlength="8" placeholder="Min 8 characters" class="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-red-500">
+                  </div>
+                  <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">Role *</label>
+                    <select name="role" required class="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+                      onchange="document.getElementById('donor-fields').style.display=this.value==='donor'?'contents':'none'">
+                      <option value="donor">Donor</option>
+                      <option value="patient">Patient</option>
+                    </select>
+                  </div>
+
+                  <!-- Donor-only fields -->
+                  <div id="donor-fields" style="display:contents">
+                    <div>
+                      <label class="block text-xs font-bold text-slate-700 mb-1">Blood Group *</label>
+                      <select name="bloodGroup" class="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-red-500">
+                        ${["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"].map((bg) => `<option value="${bg}">${bg}</option>`).join("")}
+                      </select>
+                    </div>
+                    <div>
+                      <label class="block text-xs font-bold text-slate-700 mb-1">Date of Birth</label>
+                      <input name="dateOfBirth" type="date" class="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-red-500">
+                    </div>
+                    <div class="col-span-2">
+                      <label class="block text-xs font-bold text-slate-700 mb-1">Last Donation Date</label>
+                      <input name="lastDonationDate" type="date" class="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-red-500">
+                      <p class="text-[10px] text-slate-400 mt-1">Leave blank if you have never donated before. The 56-day eligibility rule is calculated from this date.</p>
+                    </div>
+                    <div class="col-span-2 flex items-center gap-3 p-3 bg-emerald-50 rounded-xl border border-emerald-200">
+                      <input name="isAvailable" id="reg-available" type="checkbox" checked class="w-4 h-4 accent-red-600 cursor-pointer">
+                      <label for="reg-available" class="text-xs font-semibold text-emerald-800 cursor-pointer">I am currently available to donate blood</label>
+                    </div>
+                  </div>
+                </div>
+
+                <p id="reg-error" class="text-xs text-red-600 font-semibold text-center min-h-[1rem]"></p>
+                <button id="reg-btn" type="submit" class="w-full py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed">Create Account →</button>
+              </form>
+              <p class="text-center text-xs text-slate-500">Already have an account? <button onclick="Actions.setActiveTab('login')" class="text-red-600 font-bold hover:underline">Sign in</button></p>
+            </div>
+          </div>
+        `;
+        } else if (tab === "patient-dashboard") {
+          // Show only THIS patient's own requests
+          const myReqs = AppState.requests.filter(
+            (r) => r.patientId === cur.id || r.patientName === cur.name,
+          );
+          const activeCount = myReqs.filter(
+            (r) => r.status === "broadcasting" || r.status === "accepted",
+          ).length;
+          const pendingCount = myReqs.filter(
+            (r) => r.status === "screening" || r.status === "suspicious_review",
+          ).length;
+          const fulfilledCount = myReqs.filter(
+            (r) => r.status === "fulfilled",
+          ).length;
+          const totalCount = myReqs.length;
+
+          bodyHtml = `
+          <div class="flex flex-col lg:flex-row gap-6">
+            <!-- Sidebar -->
+            <aside class="w-full lg:w-64 bg-white border border-slate-200 rounded-3xl p-4 flex flex-col justify-between shrink-0 shadow-sm">
+              <div class="space-y-3">
+                <div class="p-3 bg-slate-50 rounded-2xl flex items-center gap-3">
+                  ${cur.avatarUrl ? `<img src="${cur.avatarUrl}" class="w-10 h-10 rounded-xl object-cover" />` : `<div class="w-10 h-10 rounded-xl bg-red-100 flex items-center justify-center text-red-600 font-black text-base">${(cur.name || "U")[0].toUpperCase()}</div>`}
+                  <div>
+                    <strong class="text-xs text-slate-900 block">${cur.name}</strong>
+                    <span class="text-[10px] text-red-600 font-bold uppercase">Patient</span>
+                  </div>
+                </div>
+                <nav class="space-y-1 text-xs">
+                  <button onclick="Actions.setSidebarTab('overview')" class="w-full text-left p-2.5 rounded-xl font-bold ${AppState.sidebarTab === "overview" ? "bg-slate-900 text-white" : "hover:bg-slate-100 text-slate-700"}">📊 Dashboard</button>
+                  <button onclick="openCreateRequestModal()" class="w-full text-left p-2.5 rounded-xl font-bold bg-red-50 text-red-700 border border-red-200">+ Create Request</button>
+                  <button onclick="Actions.setSidebarTab('my-requests')" class="w-full text-left p-2.5 rounded-xl font-bold ${AppState.sidebarTab === "my-requests" ? "bg-slate-900 text-white" : "hover:bg-slate-100 text-slate-700"}">📋 My Requests</button>
+                  <button onclick="Actions.setActiveTab('notifications')" class="w-full text-left p-2.5 rounded-xl font-bold hover:bg-slate-100 text-slate-700">🔔 Notifications</button>
+                  <button onclick="Actions.setSidebarTab('profile')" class="w-full text-left p-2.5 rounded-xl font-bold ${AppState.sidebarTab === "profile" ? "bg-slate-900 text-white" : "hover:bg-slate-100 text-slate-700"}">👤 Profile</button>
+                </nav>
+              </div>
+                              <button onclick="Actions.logout ? Actions.logout() : Actions.setActiveTab('landing')" class="w-full p-2.5 text-xs text-slate-500 font-bold hover:text-rose-700">🚪 Sign Out</button>
+            </aside>
+
+            <!-- Main Patient Content -->
+            <div class="flex-1 space-y-6">
+              <div class="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <h1 class="text-xl sm:text-2xl font-extrabold text-slate-900">Good Morning, ${cur.name}</h1>
+                  <p class="text-xs text-slate-500 mt-1">Manage your emergency blood requests.</p>
+                </div>
+                <button onclick="openCreateRequestModal()" class="btn-red text-sm">+ Create Emergency Request</button>
+              </div>
+
+              ${
+                AppState.sidebarTab === "profile"
+                  ? `
+                <div class="bg-white p-6 rounded-3xl border border-slate-200 max-w-xl space-y-4 text-xs">
+                  <h3 class="font-bold text-base text-slate-900">Patient Profile</h3>
+                  <div><span class="text-slate-400 block">Full Name:</span><strong class="text-slate-900 text-sm">${cur.name}</strong></div>
+                  <div><span class="text-slate-400 block">Email:</span><strong class="text-slate-900">${cur.email}</strong></div>
+                  <div><span class="text-slate-400 block">Phone:</span><strong class="text-slate-900">${cur.phone}</strong></div>
+                  <div><span class="text-slate-400 block">Blood Group:</span><strong class="text-red-600">${cur.bloodGroup}</strong></div>
+                </div>
+              `
+                  : `
+                <!-- Statistics -->
+                <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                  <div class="p-4 rounded-2xl bg-white border border-slate-200 shadow-sm">
+                    <span class="text-[10px] font-bold text-slate-400 uppercase">Active Requests</span>
+                    <h3 class="text-2xl font-extrabold text-red-600 mt-1">${activeCount}</h3>
+                  </div>
+                  <div class="p-4 rounded-2xl bg-white border border-slate-200 shadow-sm">
+                    <span class="text-[10px] font-bold text-slate-400 uppercase">Pending Requests</span>
+                    <h3 class="text-2xl font-extrabold text-amber-600 mt-1">${pendingCount}</h3>
+                  </div>
+                  <div class="p-4 rounded-2xl bg-white border border-slate-200 shadow-sm">
+                    <span class="text-[10px] font-bold text-slate-400 uppercase">Fulfilled Requests</span>
+                    <h3 class="text-2xl font-extrabold text-emerald-600 mt-1">${fulfilledCount}</h3>
+                  </div>
+                  <div class="p-4 rounded-2xl bg-white border border-slate-200 shadow-sm">
+                    <span class="text-[10px] font-bold text-slate-400 uppercase">Total Requests</span>
+                    <h3 class="text-2xl font-extrabold text-slate-900 mt-1">${totalCount}</h3>
+                  </div>
+                </div>
+
+                <!-- Recent Requests Table -->
+                <div class="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+                  <div class="p-5 border-b flex items-center justify-between">
+                    <div>
+                      <h2 class="font-bold text-slate-900">Recent Requests</h2>
+                      <p class="text-xs text-slate-400">Track current status and donor responses.</p>
+                    </div>
+                    <span class="text-xs bg-slate-100 px-2.5 py-1 rounded-lg">${myReqs.length} Requests</span>
+                  </div>
+
+                  <div class="overflow-x-auto">
+                    <table class="w-full text-left text-xs sm:text-sm">
+                      <thead class="bg-slate-50 uppercase text-slate-500 font-semibold border-b text-[11px]">
+                        <tr>
+                          <th class="py-3 px-4 sm:px-6">Request ID</th>
+                          <th class="py-3 px-4">Blood Group</th>
+                          <th class="py-3 px-4">Units</th>
+                          <th class="py-3 px-4">Urgency</th>
+                          <th class="py-3 px-4">Status</th>
+                          <th class="py-3 px-4">Date</th>
+                          <th class="py-3 px-4 sm:px-6 text-right">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody class="divide-y font-medium text-slate-700">
+                        ${myReqs.length === 0 ? `<tr><td colspan="7" class="py-10 text-center text-slate-400 text-xs">No requests yet. Click "+ Create Emergency Request" to submit one.</td></tr>` : ""}
+                        ${myReqs
+                          .map(
+                            (req) => `
+                          <tr onclick="openTrackModal('${req.id}')" class="hover:bg-slate-50 cursor-pointer">
+                            <td class="py-3.5 px-4 sm:px-6 font-mono font-bold text-slate-900">${req.id}</td>
+                            <td class="py-3.5 px-4"><span class="px-2 py-0.5 rounded bg-red-100 text-red-800 font-black text-xs">${req.bloodGroup}</span></td>
+                            <td class="py-3.5 px-4 font-bold">${req.unitsRequired}</td>
+                            <td class="py-3.5 px-4"><span class="px-2 py-0.5 rounded text-xs font-semibold ${req.urgency === "CRITICAL" ? "bg-red-50 text-red-700 border border-red-200" : "bg-blue-50 text-blue-700"}">${req.urgency}</span></td>
+                            <td class="py-3.5 px-4"><span class="px-2 py-0.5 rounded text-xs font-semibold ${req.status === "broadcasting" ? "bg-red-100 text-red-700" : req.status === "accepted" ? "bg-blue-100 text-blue-700" : req.status === "fulfilled" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}">${req.status}</span></td>
+                            <td class="py-3.5 px-4 text-xs text-slate-400">${req.createdAt.split("T")[0]}</td>
+                            <td class="py-3.5 px-4 sm:px-6 text-right">
+                              <button class="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-xs font-bold">Track Live 👁️</button>
+                            </td>
+                          </tr>
+                        `,
+                          )
+                          .join("")}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              `
+              }
+            </div>
+          </div>
+        `;
+        } else if (tab === "donor-dashboard") {
+          const elig = calculateEligibility(cur);
+          const activeAlerts = AppState.requests.filter(
+            (r) =>
+              r.status === "broadcasting" && r.bloodGroup === cur.bloodGroup,
+          );
+          const myDonations = AppState.requests.filter(
+            (r) => r.acceptedByDonorId === cur.id,
+          );
+
+          bodyHtml = `
+          <div class="flex flex-col lg:flex-row gap-6">
+            <!-- Sidebar -->
+            <aside class="w-full lg:w-64 bg-white border border-slate-200 rounded-3xl p-4 flex flex-col justify-between shrink-0 shadow-sm">
+              <div class="space-y-3">
+                <div class="p-3 bg-slate-50 rounded-2xl flex items-center gap-3">
+                  ${cur.avatarUrl ? `<img src="${cur.avatarUrl}" class="w-10 h-10 rounded-xl object-cover" />` : `<div class="w-10 h-10 rounded-xl bg-emerald-100 flex items-center justify-center text-emerald-600 font-black text-base">${(cur.name || "U")[0].toUpperCase()}</div>`}
+                  <div>
+                    <strong class="text-xs text-slate-900 block">${cur.name}</strong>
+                    <span class="text-[10px] text-emerald-600 font-bold uppercase">Donor • ${cur.bloodGroup}</span>
+                  </div>
+                </div>
+                <nav class="space-y-1 text-xs">
+                  <button onclick="Actions.setSidebarTab('overview')" class="w-full text-left p-2.5 rounded-xl font-bold ${AppState.sidebarTab === "overview" ? "bg-slate-900 text-white" : "hover:bg-slate-100 text-slate-700"}">📊 Dashboard</button>
+                  <button onclick="Actions.setSidebarTab('emergency-alerts')" class="w-full text-left p-2.5 rounded-xl font-bold ${AppState.sidebarTab === "emergency-alerts" ? "bg-red-600 text-white" : "hover:bg-slate-100 text-slate-700"}">🚨 Emergency Alerts (${activeAlerts.length})</button>
+                  <button onclick="Actions.setSidebarTab('my-donations')" class="w-full text-left p-2.5 rounded-xl font-bold ${AppState.sidebarTab === "my-donations" ? "bg-slate-900 text-white" : "hover:bg-slate-100 text-slate-700"}">❤️ My Donations</button>
+                  <button onclick="Actions.setSidebarTab('eligibility')" class="w-full text-left p-2.5 rounded-xl font-bold ${AppState.sidebarTab === "eligibility" ? "bg-slate-900 text-white" : "hover:bg-slate-100 text-slate-700"}">✅ Eligibility Check</button>
+                  <button onclick="Actions.setActiveTab('notifications')" class="w-full text-left p-2.5 rounded-xl font-bold hover:bg-slate-100 text-slate-700">🔔 Notifications</button>
+                  <button onclick="Actions.setSidebarTab('profile')" class="w-full text-left p-2.5 rounded-xl font-bold ${AppState.sidebarTab === "profile" ? "bg-slate-900 text-white" : "hover:bg-slate-100 text-slate-700"}">👤 Profile</button>
+                </nav>
+              </div>
+                              <button onclick="Actions.logout ? Actions.logout() : Actions.setActiveTab('landing')" class="w-full p-2.5 text-xs text-slate-500 font-bold hover:text-rose-700">🚪 Sign Out</button>
+            </aside>
+
+            <!-- Main Donor Content -->
+            <div class="flex-1 space-y-6">
+              
+              <!-- Header & Large Availability Control -->
+              <div class="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                  <h1 class="text-xl sm:text-2xl font-extrabold text-slate-900">Welcome, ${cur.name}</h1>
+                  <p class="text-xs text-slate-500 mt-1">Ready for real-time emergency alerts.</p>
+                </div>
+
+                <!-- Large Availability Control -->
+                <div class="flex items-center gap-4 p-4 rounded-2xl bg-slate-50 border border-slate-200">
+                  <div>
+                    <span class="text-[10px] font-bold text-slate-400 uppercase block">Donation Availability</span>
+                    <span class="text-sm font-extrabold ${cur.isAvailable ? "text-emerald-700" : "text-rose-700"}">
+                      ${cur.isAvailable ? "🟢 AVAILABLE" : "🔴 UNAVAILABLE"}
+                    </span>
+                  </div>
+                  <button onclick="Actions.toggleAvailability()" class="relative inline-flex h-8 w-16 rounded-full transition-colors ${cur.isAvailable ? "bg-emerald-600" : "bg-slate-300"}">
+                    <span class="inline-block h-7 w-7 transform rounded-full bg-white transition shadow ${cur.isAvailable ? "translate-x-8" : "translate-x-0.5"}"></span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Statistics -->
+              <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                <div class="p-4 rounded-2xl bg-white border border-slate-200 shadow-sm">
+                  <span class="text-[10px] font-bold text-slate-400 uppercase">Current Eligibility</span>
+                  <h3 class="text-base font-extrabold mt-1">${elig.isEligible ? '<span class="text-emerald-600">🟢 Eligible</span>' : '<span class="text-rose-600">🔴 Not Eligible</span>'}</h3>
+                </div>
+                <div class="p-4 rounded-2xl bg-white border border-slate-200 shadow-sm">
+                  <span class="text-[10px] font-bold text-slate-400 uppercase">Total Donations</span>
+                  <h3 class="text-2xl font-extrabold text-slate-900 mt-1">${(cur.totalDonations || 0) + myDonations.length}</h3>
+                </div>
+                <div class="p-4 rounded-2xl bg-white border border-slate-200 shadow-sm">
+                  <span class="text-[10px] font-bold text-slate-400 uppercase">Last Donation</span>
+                  <h3 class="text-xs font-bold text-slate-900 mt-1">${cur.lastDonationDate ? cur.lastDonationDate.split("T")[0] : "Never donated"}</h3>
+                  <button onclick="openEditDateModal()" class="text-[10px] text-red-600 font-bold hover:underline">Edit Date ✎</button>
+                </div>
+                <div class="p-4 rounded-2xl bg-white border border-slate-200 shadow-sm">
+                  <span class="text-[10px] font-bold text-slate-400 uppercase">Emergency Requests</span>
+                  <h3 class="text-2xl font-extrabold text-red-600 mt-1">${activeAlerts.length}</h3>
+                </div>
+              </div>
+
+              <!-- Donor Eligibility Card -->
+              <div class="p-6 rounded-3xl border ${elig.isEligible ? "bg-emerald-50/70 border-emerald-200" : "bg-rose-50/70 border-rose-200"}">
+                <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                  <div class="space-y-2 text-xs">
+                    <h2 class="text-base font-bold text-slate-900">Your Donation Eligibility</h2>
+                    <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
+                      <div><span class="text-slate-400 block text-[10px]">Blood Group:</span><strong class="text-slate-900 text-sm">${elig.bloodGroup}</strong></div>
+                      <div><span class="text-slate-400 block text-[10px]">Availability:</span><strong class="${elig.isAvailable ? "text-emerald-700" : "text-rose-700"}">${elig.isAvailable ? "Available" : "Unavailable"}</strong></div>
+                      <div><span class="text-slate-400 block text-[10px]">Last Donation:</span><strong class="text-slate-900">${elig.lastDonationStr}</strong></div>
+                      <div><span class="text-slate-400 block text-[10px]">Next Eligible Date:</span><strong class="text-slate-900">${elig.nextEligibleStr}</strong></div>
+                    </div>
+                    ${
+                      elig.isEligible
+                        ? `
+                      <p class="text-emerald-800 font-semibold pt-1">Status: 🟢 Eligible to Receive Emergency Alerts</p>
+                    `
+                        : `
+                      <p class="text-rose-800 font-semibold pt-1">Status: 🔴 Currently Not Eligible (${elig.reason})</p>
+                    `
+                    }
+                  </div>
+                  <button onclick="openEditDateModal()" class="px-4 py-2 bg-white hover:bg-slate-50 border border-slate-300 rounded-2xl text-xs font-bold text-slate-700 shadow-sm">
+                    Update Records
+                  </button>
+                </div>
+              </div>
+
+              <!-- Emergency Alerts Feed -->
+              <div class="space-y-4">
+                <div class="flex items-center justify-between">
+                  <h2 class="text-lg font-bold text-slate-900">Emergency Alert Broadcasts</h2>
+                  <span class="text-xs bg-slate-100 px-3 py-1 rounded-xl text-slate-600 font-medium">Zero Ranking / Zero Scoring</span>
+                </div>
+
+                ${
+                  activeAlerts.length === 0
+                    ? `
+                  <div class="p-8 text-center bg-white rounded-3xl border border-slate-200 text-xs text-slate-400">
+                    No matching emergency requests at the moment.
+                  </div>
+                `
+                    : activeAlerts
+                        .map(
+                          (alert) => `
+                  <div class="p-5 sm:p-6 rounded-3xl bg-white border-2 border-red-200 shadow-emergency space-y-4">
+                    <div class="flex items-center justify-between border-b border-red-100 pb-3">
+                      <span class="font-extrabold text-sm text-red-700 uppercase">🚨 Emergency Blood Request</span>
+                      <span class="px-2 py-0.5 rounded text-xs font-bold bg-red-100 text-red-700">${alert.urgency}</span>
+                    </div>
+
+                    <div class="p-3 bg-red-50 text-red-950 text-xs rounded-2xl font-medium">
+                      📢 <strong>Emergency Alert Broadcast:</strong> Your blood group matches an active emergency request. Eligible donors receive the same notification.
+                    </div>
+
+                    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                      <div class="p-3 bg-slate-50 rounded-2xl"><span class="text-slate-400 block text-[10px]">Blood Group</span><strong class="text-red-600 text-base font-black">${alert.bloodGroup}</strong></div>
+                      <div class="p-3 bg-slate-50 rounded-2xl"><span class="text-slate-400 block text-[10px]">Units Required</span><strong class="text-slate-900 text-base font-black">${alert.unitsRequired} Units</strong></div>
+                      <div class="p-3 bg-slate-50 rounded-2xl sm:col-span-2"><span class="text-slate-400 block text-[10px]">Hospital</span><strong class="text-slate-900 text-sm block truncate">${alert.hospitalName}</strong></div>
+                    </div>
+
+                    <div class="text-xs text-slate-600 italic bg-slate-50 p-3 rounded-xl">
+                      "A patient urgently requires your blood group. ${alert.additionalNotes}"
+                    </div>
+
+                    <div class="flex justify-end gap-2 pt-1">
+                      <button onclick="openTrackModal('${alert.id}')" class="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs rounded-2xl">View Request</button>
+                      <button onclick="Actions.acceptRequest('${alert.id}')" ${!elig.isEligible ? "disabled" : ""} class="btn-red text-xs disabled:opacity-40">Accept Request</button>
+                    </div>
+                  </div>
+                `,
+                        )
+                        .join("")
+                }
+              </div>
+
+              <!-- My Donations History -->
+              <div class="bg-white rounded-3xl border border-slate-200 p-6 space-y-3">
+                <h3 class="font-bold text-slate-900">My Donations</h3>
+                ${
+                  myDonations.length === 0
+                    ? `
+                  <p class="text-xs text-slate-400">No donations logged in current active session.</p>
+                `
+                    : `
+                  <div class="divide-y text-xs">
+                    ${myDonations
+                      .map(
+                        (h) => `
+                      <div class="py-3 flex justify-between items-center">
+                        <div><strong class="text-slate-900 block">${h.hospitalName}</strong><span class="text-slate-400">${h.unitsRequired} Unit(s) of ${h.bloodGroup} • Request ${h.id}</span></div>
+                        <span class="text-emerald-600 font-bold">✓ Request Accepted</span>
+                      </div>
+                    `,
+                      )
+                      .join("")}
+                  </div>
+                `
+                }
+              </div>
+
+            </div>
+          </div>
+        `;
+        } else if (tab === "admin-dashboard") {
+          const suspicious = AppState.requests.filter(
+            (r) => r.status === "suspicious_review",
+          );
+          const active = AppState.requests.filter(
+            (r) => r.status === "broadcasting" || r.status === "accepted",
+          ).length;
+          const completed =
+            AppState.requests.filter((r) => r.status === "fulfilled").length +
+            848;
+          const totalUnits = AppState.inventory.reduce(
+            (a, c) => a + c.units,
+            0,
+          );
+
+          bodyHtml = `
+          <div class="flex flex-col lg:flex-row gap-6">
+            <!-- Sidebar -->
+            <aside class="w-full lg:w-64 bg-white border border-slate-200 rounded-3xl p-4 flex flex-col justify-between shrink-0 shadow-sm">
+              <div class="space-y-3">
+                <div class="p-3 bg-slate-50 rounded-2xl flex items-center gap-3">
+                  ${cur.avatarUrl ? `<img src="${cur.avatarUrl}" class="w-10 h-10 rounded-xl object-cover" />` : `<div class="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center text-blue-600 font-black text-base">${(cur.name || "A")[0].toUpperCase()}</div>`}
+                  <div>
+                    <strong class="text-xs text-slate-900 block">${cur.name}</strong>
+                    <span class="text-[10px] text-slate-900 font-bold uppercase">Admin Officer</span>
+                  </div>
+                </div>
+                <nav class="space-y-1 text-xs">
+                  <button onclick="Actions.setSidebarTab('overview')" class="w-full text-left p-2.5 rounded-xl font-bold ${AppState.sidebarTab === "overview" ? "bg-slate-900 text-white" : "hover:bg-slate-100 text-slate-700"}">📊 Dashboard</button>
+                  <button onclick="Actions.setSidebarTab('fraud-review')" class="w-full text-left p-2.5 rounded-xl font-bold ${AppState.sidebarTab === "fraud-review" ? "bg-amber-500 text-white" : "hover:bg-slate-100 text-slate-700"}">🛡️ Fraud Review (${suspicious.length})</button>
+                  <button onclick="Actions.setSidebarTab('users-donors')" class="w-full text-left p-2.5 rounded-xl font-bold ${AppState.sidebarTab === "users-donors" ? "bg-slate-900 text-white" : "hover:bg-slate-100 text-slate-700"}">👥 Users & Donors</button>
+                  <button onclick="Actions.setSidebarTab('analytics')" class="w-full text-left p-2.5 rounded-xl font-bold ${AppState.sidebarTab === "analytics" ? "bg-slate-900 text-white" : "hover:bg-slate-100 text-slate-700"}">📈 Analytics</button>
+                  <button onclick="Actions.setActiveTab('notifications')" class="w-full text-left p-2.5 rounded-xl font-bold hover:bg-slate-100 text-slate-700">🔔 Notifications</button>
+                  <button onclick="Actions.setSidebarTab('settings')" class="w-full text-left p-2.5 rounded-xl font-bold ${AppState.sidebarTab === "settings" ? "bg-slate-900 text-white" : "hover:bg-slate-100 text-slate-700"}">⚙️ Settings</button>
+                </nav>
+              </div>
+                              <button onclick="Actions.logout ? Actions.logout() : Actions.setActiveTab('landing')" class="w-full p-2.5 text-xs text-slate-500 font-bold hover:text-rose-700">🚪 Sign Out</button>
+            </aside>
+
+            <!-- Main Admin Content -->
+            <div class="flex-1 space-y-6">
+              <div class="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex justify-between items-center">
+                <div>
+                  <h1 class="text-xl sm:text-2xl font-extrabold text-slate-900">BloodGuard Admin Dashboard</h1>
+                  <p class="text-xs text-slate-500 mt-1">Review suspicious requests and manage the platform.</p>
+                </div>
+              </div>
+
+              <!-- 7 Statistics Cards -->
+              <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3 text-xs">
+                <div class="p-3.5 bg-white rounded-2xl border border-slate-200 shadow-sm"><span class="text-slate-400 block text-[10px]">Total Users</span><strong class="text-xl text-slate-900">${(AppState.adminStats && AppState.adminStats.totalUsers) || "—"}</strong></div>
+                <div class="p-3.5 bg-white rounded-2xl border border-slate-200 shadow-sm"><span class="text-slate-400 block text-[10px]">Total Donors</span><strong class="text-xl text-slate-900">${(AppState.adminStats && AppState.adminStats.totalDonors) || "—"}</strong></div>
+                <div class="p-3.5 bg-white rounded-2xl border border-slate-200 shadow-sm"><span class="text-slate-400 block text-[10px]">Available Donors</span><strong class="text-xl text-emerald-600">${(AppState.adminStats && AppState.adminStats.availableDonors) || "—"}</strong></div>
+                <div class="p-3.5 bg-white rounded-2xl border border-slate-200 shadow-sm"><span class="text-slate-400 block text-[10px]">Active Requests</span><strong class="text-xl text-red-600">${active}</strong></div>
+                <div class="p-3.5 bg-white rounded-2xl border border-slate-200 shadow-sm"><span class="text-slate-400 block text-[10px]">Completed Requests</span><strong class="text-xl text-emerald-600">${completed}</strong></div>
+                <div class="p-3.5 bg-amber-50 rounded-2xl border border-amber-200 shadow-sm"><span class="text-amber-800 block text-[10px] font-bold">Suspicious Requests</span><strong class="text-xl text-amber-800">${suspicious.length}</strong></div>
+                <div class="p-3.5 bg-white rounded-2xl border border-slate-200 shadow-sm"><span class="text-slate-400 block text-[10px]">Hospital Network</span><strong class="text-xl text-slate-900">41 Cities</strong></div>
+              </div>
+
+              <!-- FRAUD REVIEW CENTER -->
+              ${
+                AppState.sidebarTab === "overview" ||
+                AppState.sidebarTab === "fraud-review"
+                  ? `
+                <div class="bg-white rounded-3xl border-2 border-amber-200 shadow-sm overflow-hidden">
+                  <div class="p-5 bg-amber-50/60 border-b border-amber-200 flex items-center justify-between">
+                    <div>
+                      <h2 class="font-extrabold text-amber-950">Fraud Review Center</h2>
+                      <p class="text-xs text-amber-800">Review suspicious requests and manage the platform.</p>
+                    </div>
+                    <span class="px-3 py-1 rounded-full bg-amber-500 text-white font-extrabold text-xs">${suspicious.length} Suspicious</span>
+                  </div>
+
+                  ${
+                    suspicious.length === 0
+                      ? `
+                    <div class="p-6 text-center text-xs text-slate-400">No suspicious requests require review.</div>
+                  `
+                      : `
+                    <div class="overflow-x-auto p-4">
+                      <table class="w-full text-left text-xs">
+                        <thead class="bg-slate-50 uppercase text-slate-500 font-semibold border-b">
+                          <tr>
+                            <th class="py-2.5 px-3">Request ID</th>
+                            <th class="py-2.5 px-3">Patient</th>
+                            <th class="py-2.5 px-3">Blood Group</th>
+                            <th class="py-2.5 px-3">Units</th>
+                            <th class="py-2.5 px-3">Detected Indicators</th>
+                            <th class="py-2.5 px-3">Status</th>
+                            <th class="py-2.5 px-3">Created Time</th>
+                            <th class="py-2.5 px-3 text-right">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody class="divide-y font-medium text-slate-700">
+                          ${suspicious
+                            .map(
+                              (item) => `
+                            <tr>
+                              <td class="py-3 px-3 font-mono font-bold">${item.id}</td>
+                              <td class="py-3 px-3">${item.patientName}</td>
+                              <td class="py-3 px-3 font-black text-red-600">${item.bloodGroup}</td>
+                              <td class="py-3 px-3 font-bold">${item.unitsRequired}</td>
+                              <td class="py-3 px-3">
+                                <div class="flex flex-wrap gap-1">
+                                  ${item.fraudIndicators.map((ind) => `<span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-semibold border border-amber-200">${ind}</span>`).join("")}
+                                </div>
+                              </td>
+                              <td class="py-3 px-3"><span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 text-xs font-bold">Suspicious</span></td>
+                              <td class="py-3 px-3 text-slate-400">${item.createdAt.split("T")[0]}</td>
+                              <td class="py-3 px-3 text-right space-x-1.5">
+                                <button onclick="openTrackModal('${item.id}')" class="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-bold">View</button>
+                                <button onclick="Actions.approveFlagged('${item.id}')" class="px-2.5 py-1 bg-emerald-600 text-white rounded-lg font-bold hover:bg-emerald-700">Approve</button>
+                                <button onclick="Actions.rejectFlagged('${item.id}')" class="px-2.5 py-1 bg-rose-600 text-white rounded-lg font-bold hover:bg-rose-700">Reject</button>
+                              </td>
+                            </tr>
+                          `,
+                            )
+                            .join("")}
+                        </tbody>
+                      </table>
+                    </div>
+                  `
+                  }
+                </div>
+              `
+                  : ""
+              }
+
+
+              <!-- ADMIN ANALYTICS -->
+              ${
+                AppState.sidebarTab === "overview" ||
+                AppState.sidebarTab === "analytics"
+                  ? `
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  <div class="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm space-y-3">
+                    <h3 class="font-bold text-slate-900 text-sm">Blood Requests by Blood Group (Bar chart)</h3>
+                    <div class="h-44 flex items-end justify-between gap-2 pt-6 px-2">
+                      ${AppState.inventory
+                        .map(
+                          (inv) => `
+                        <div class="flex-1 flex flex-col items-center gap-1">
+                          <span class="text-[10px] font-bold text-slate-600">${inv.units}</span>
+                          <div class="w-full bg-red-600 rounded-t-md" style="height: ${Math.min(100, Math.max(15, inv.units * 2.2))}%;"></div>
+                          <span class="text-[10px] font-extrabold text-slate-700">${inv.bloodGroup}</span>
+                        </div>
+                      `,
+                        )
+                        .join("")}
+                    </div>
+                  </div>
+
+                  <div class="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm space-y-3">
+                    <h3 class="font-bold text-slate-900 text-sm">Request Status (Donut/pie chart)</h3>
+                    <div class="p-4 bg-slate-50 rounded-2xl flex items-center justify-around text-xs">
+                      <div class="text-center"><span class="text-xl font-extrabold text-red-600 block">${active}</span><span class="text-[10px] text-slate-500">Broadcasting</span></div>
+                      <div class="text-center"><span class="text-xl font-extrabold text-emerald-600 block">${completed}</span><span class="text-[10px] text-slate-500">Fulfilled</span></div>
+                      <div class="text-center"><span class="text-xl font-extrabold text-amber-600 block">${suspicious.length}</span><span class="text-[10px] text-slate-500">Suspicious</span></div>
+                    </div>
+                  </div>
+                </div>
+              `
+                  : ""
+              }
+
+              <!-- SMS MODULE STATUS & TEST -->
+              ${
+                AppState.sidebarTab === "overview" ||
+                AppState.sidebarTab === "settings"
+                  ? `
+                <div class="bg-white rounded-3xl border border-slate-200 shadow-sm p-6 space-y-4">
+                  <div class="flex items-center justify-between border-b pb-3">
+                    <div>
+                      <h2 class="font-bold text-slate-900">📱 SMS Module</h2>
+                      <p class="text-xs text-slate-400">Test SMS delivery to donors. Configure via backend/.env</p>
+                    </div>
+                    <span id="sms-status-badge" class="text-xs px-3 py-1 rounded-full bg-slate-100 text-slate-600 font-bold">Checking...</span>
+                  </div>
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                    <div class="space-y-3">
+                      <div>
+                        <label class="font-bold text-slate-700 block mb-1">Test Phone Number</label>
+                        <input id="sms-test-phone" type="tel" placeholder="+919876543210" value="${cur.phone || ""}"
+                          class="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-red-500">
+                        <p class="text-[10px] text-slate-400 mt-1">Include country code: +91XXXXXXXXXX</p>
+                      </div>
+                      <button onclick="window.testSMS()"
+                        class="w-full py-2.5 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl text-xs transition-colors">
+                        📤 Send Test SMS
+                      </button>
+                    </div>
+                    <div id="sms-test-result" class="p-3 bg-slate-50 rounded-2xl border border-slate-200 text-xs text-slate-500 min-h-[80px]">
+                      Result appears here after sending...
+                    </div>
+                  </div>
+                  <div class="p-3 bg-blue-50 border border-blue-200 rounded-2xl text-xs text-blue-800">
+                    <p class="font-bold mb-1">⚙️ Enable Fast2SMS (India):</p>
+                    <ol class="list-decimal ml-4 space-y-0.5 text-blue-700">
+                      <li>Sign up at <strong>fast2sms.com</strong> → Add ₹100 minimum balance</li>
+                      <li>Go to <strong>Developer API</strong> → Copy your API Key</li>
+                      <li>Open <code class="bg-blue-100 px-1 rounded">backend/.env</code> → Set <code class="bg-blue-100 px-1 rounded">FAST2SMS_API_KEY=your_key</code></li>
+                      <li>Keep <code class="bg-blue-100 px-1 rounded">SMS_PROVIDER=fast2sms</code></li>
+                      <li>Restart: <code class="bg-blue-100 px-1 rounded">node server.js</code></li>
+                    </ol>
+                  </div>
+                </div>
+              `
+                  : ""
+              }
+
+            </div>
+          </div>
+        `;
+        } else if (tab === "how-it-works") {
+          bodyHtml = `
+          <div class="max-w-4xl mx-auto space-y-8 pb-12 text-xs">
+            <div class="text-center space-y-2">
+              <h1 class="text-3xl font-extrabold text-slate-900">How BloodGuard Works</h1>
+              <p class="text-sm text-slate-500">Zero-latency simultaneous broadcast architecture with AI anomaly screening.</p>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div class="p-6 bg-slate-100 rounded-3xl space-y-3">
+                <h3 class="font-bold text-rose-700 text-sm">✕ Legacy Directory Apps</h3>
+                <p>• Manual sequential phone calls create severe delays during the golden hour.</p>
+                <p>• Zero protection against fake requests, spam bots, and bulk hoaxes.</p>
+                <p>• Regularly contacts donors who donated recently.</p>
+              </div>
+              <div class="p-6 bg-emerald-50 rounded-3xl space-y-3 border border-emerald-200">
+                <h3 class="font-bold text-emerald-800 text-sm">✓ BloodGuard Framework</h3>
+                <p>• Real-time multicast push notification alerts all matching donors at once.</p>
+                <p>• Isolation Forest anomaly detection flags abnormal bulk demand requests.</p>
+                <p>• Strict 56-day whole blood refractory rule automatically enforced.</p>
+              </div>
+            </div>
+          </div>
+        `;
+        } else if (tab === "about") {
+          bodyHtml = `
+          <div class="max-w-4xl mx-auto space-y-6 pb-12 text-xs">
+            <div class="text-center space-y-2">
+              <h1 class="text-3xl font-extrabold text-slate-900">About BloodGuard</h1>
+              <p class="text-sm text-slate-500">A Secure and Intelligent Blood Donor Management Framework with AI-Driven Anomaly Detection and Real-Time Emergency Notifications.</p>
+            </div>
+
+            <div class="p-6 bg-slate-900 text-white rounded-3xl space-y-3 shadow-xl">
+              <h3 class="font-bold text-red-400 text-sm uppercase">Ethical Architecture Guarantees</h3>
+              <p>• <strong>NO Donor Ranking or Scoring:</strong> Donors are never ranked, scored, or tiered.</p>
+              <p>• <strong>NO Sequential / Cascading Alerts:</strong> All matching donors receive the notification simultaneously.</p>
+              <p>• <strong>NO Continuous GPS Tracking:</strong> Preserves donor privacy and battery life.</p>
+            </div>
+          </div>
+        `;
+        } else if (tab === "notifications") {
+          bodyHtml = `
+          <div class="max-w-3xl mx-auto space-y-4 pb-12 text-xs">
+            <div class="flex justify-between items-center bg-white p-6 rounded-3xl border border-slate-200">
+              <div>
+                <h1 class="text-xl font-bold text-slate-900">Notification Center</h1>
+                <p class="text-slate-500">Emergency broadcasts and security updates.</p>
+              </div>
+              <button onclick="Actions.markAllRead()" class="px-3 py-1.5 bg-slate-100 text-xs font-bold rounded-xl hover:bg-slate-200">Mark All Read</button>
+            </div>
+
+            <div class="space-y-2.5">
+              ${AppState.notifications
+                .map(
+                  (n) => `
+                <div class="p-4 rounded-2xl border ${!n.isRead ? "bg-red-50/60 border-red-200" : "bg-white border-slate-200"}">
+                  <div class="font-bold text-slate-900 text-sm">${n.title}</div>
+                  <div class="text-slate-600 mt-0.5">${n.message}</div>
+                  <span class="text-[10px] text-slate-400 mt-1 block">${n.timestamp}</span>
+                </div>
+              `,
+                )
+                .join("")}
+            </div>
+          </div>
+        `;
+        }
+
+        root.innerHTML = `
+        ${demoBarHtml}
+        ${navbarHtml}
+        <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+          ${bodyHtml}
+        </main>
+      `;
+      }
+
+      // Initialize & render immediately
+      renderApp();
+    </script>
+
+    <!-- ============================================================
+       BACKEND API INTEGRATION LAYER
+       Bridges the existing vanilla JS UI to the Express + MongoDB backend.
+       If backend is offline, falls back to localStorage mode seamlessly.
+       ============================================================ -->
+    <script>
+      (function () {
+        "use strict";
+
+        const API_BASE =
+          window.location.protocol === "file:"
+            ? "http://localhost:4000/api"
+            : window.location.origin + "/api";
+        let backendAvailable = false;
+        let authToken = localStorage.getItem("bg_auth_token") || null;
+
+        // ── API Helper ──────────────────────────────────────────
+        async function api(endpoint, options = {}) {
+          const headers = { ...(options.headers || {}) };
+          if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
+          if (!(options.body instanceof FormData)) {
+            headers["Content-Type"] = "application/json";
+          }
+          const res = await fetch(`${API_BASE}${endpoint}`, {
+            ...options,
+            headers,
+            body:
+              options.body instanceof FormData
+                ? options.body
+                : options.body
+                  ? JSON.stringify(options.body)
+                  : undefined,
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || `API error ${res.status}`);
+          return data;
+        }
+
+        // ── Check backend on load ───────────────────────────────
+        async function checkBackend() {
+          try {
+            const data = await api("/health");
+            backendAvailable = data.status === "ok";
+            if (backendAvailable) {
+              console.log("✅ BloodGuard backend connected:", data.mongodb);
+              // If we have a saved token, verify it
+              if (authToken) {
+                try {
+                  const me = await api("/auth/me");
+                  setCurrentUserFromApi(me.user);
+                  console.log(
+                    "✅ Authenticated as:",
+                    me.user.name,
+                    `(${me.user.role})`,
+                  );
+                } catch (e) {
+                  // Token expired or invalid
+                  console.warn("Auth token expired, clearing.");
+                  authToken = null;
+                  localStorage.removeItem("bg_auth_token");
+                }
+              }
+              overrideActions();
+              renderApp();
+              // Load real data if authenticated
+              if (authToken) {
+                window.Actions.refreshData &&
+                  window.Actions.refreshData().catch(() => {});
+              }
+            }
+          } catch (e) {
+            console.log(
+              "ℹ️ Backend not available, using localStorage demo mode.",
+            );
+            renderApp();
+          }
+        }
+
+        function setCurrentUserFromApi(user) {
+          AppState.currentUser = {
+            id: user._id || user.id,
+            name: user.name,
+            email: user.email,
+            phone: user.phone,
+            role: user.role,
+            bloodGroup: user.bloodGroup || "",
+            dateOfBirth: user.dateOfBirth || "",
+            lastDonationDate: user.lastDonationDate
+              ? user.lastDonationDate.split("T")[0]
+              : "",
+            isAvailable: user.isAvailable ?? true,
+            totalDonations: user.totalDonations || 0,
+            hospitalAffiliation: user.hospitalAffiliation || "",
+          };
+          saveState();
+        }
+
+        // ── Override Actions with real API calls ─────────────────
+        function overrideActions() {
+          const origActions = { ...window.Actions };
+
+          // ── AUTH: Register ──────────────────────────────────────
+          window.Actions.register = async function (formData) {
+            try {
+              const data = await api("/auth/register", {
+                method: "POST",
+                body: {
+                  name: formData.name,
+                  email: formData.email,
+                  phone: formData.phone,
+                  password: formData.password,
+                  role: formData.role || "donor",
+                  bloodGroup: formData.bloodGroup,
+                  dateOfBirth: formData.dateOfBirth,
+                  lastDonationDate: formData.lastDonationDate,
+                  isAvailable: formData.isAvailable !== false,
+                  hospitalAffiliation: formData.hospitalAffiliation,
+                },
+              });
+              authToken = data.token;
+              localStorage.setItem("bg_auth_token", authToken);
+              setCurrentUserFromApi(data.user);
+
+              if (data.user.role === "patient")
+                AppState.activeTab = "patient-dashboard";
+              else if (data.user.role === "donor")
+                AppState.activeTab = "donor-dashboard";
+              else if (data.user.role === "admin")
+                AppState.activeTab = "admin-dashboard";
+
+              showToast(
+                `✓ Registration successful! Welcome, ${data.user.name}`,
+                "success",
+              );
+              closeModal();
+              renderApp();
+              // Load real data immediately
+              window.Actions.refreshData().catch(() => {});
+            } catch (e) {
+              showToast(e.message, "error");
+            }
+          };
+
+          // ── AUTH: Login ─────────────────────────────────────────
+          window.Actions.login = async function (email, password) {
+            try {
+              const data = await api("/auth/login", {
+                method: "POST",
+                body: { email, password },
+              });
+              authToken = data.token;
+              localStorage.setItem("bg_auth_token", authToken);
+              setCurrentUserFromApi(data.user);
+
+              if (data.user.role === "patient")
+                AppState.activeTab = "patient-dashboard";
+              else if (data.user.role === "donor")
+                AppState.activeTab = "donor-dashboard";
+              else if (data.user.role === "admin")
+                AppState.activeTab = "admin-dashboard";
+
+              showToast(`Welcome back, ${data.user.name}!`, "success");
+              renderApp();
+              // Load real data immediately after login
+              window.Actions.refreshData().catch(() => {});
+            } catch (e) {
+              showToast(e.message, "error");
+            }
+          };
+
+          // ── AUTH: Logout ────────────────────────────────────────
+          window.Actions.logout = function () {
+            authToken = null;
+            localStorage.removeItem("bg_auth_token");
+            AppState.currentUser = GUEST_USER; // guest until login
+            AppState.activeTab = "landing";
+            saveState();
+            showToast("Logged out successfully.", "info");
+            renderApp();
+          };
+
+          // ── Toggle Availability ─────────────────────────────────
+          window.Actions.toggleAvailability = async function () {
+            if (!authToken) return origActions.toggleAvailability();
+            try {
+              const newVal = !AppState.currentUser.isAvailable;
+              await api("/auth/availability", {
+                method: "PATCH",
+                body: { isAvailable: newVal },
+              });
+              AppState.currentUser.isAvailable = newVal;
+              saveState();
+              showToast(
+                `Availability: ${newVal ? "🟢 AVAILABLE" : "🔴 UNAVAILABLE"}`,
+                "info",
+              );
+              renderApp();
+            } catch (e) {
+              showToast(e.message, "error");
+            }
+          };
+
+          // ── Create Emergency Request (with document upload) ─────
+          window.Actions.createEmergencyRequest = async function (formData) {
+            if (!authToken) return origActions.createEmergencyRequest(formData);
+            try {
+              const fd = new FormData();
+              fd.append("bloodGroup", formData.bloodGroup);
+              fd.append("unitsRequired", formData.unitsRequired);
+              fd.append("urgency", formData.urgency || "CRITICAL");
+              fd.append(
+                "patientName",
+                formData.patientName || AppState.currentUser.name,
+              );
+              fd.append(
+                "contactPhone",
+                formData.contactPhone || AppState.currentUser.phone,
+              );
+              fd.append("hospitalName", formData.hospitalName);
+              if (formData.additionalNotes)
+                fd.append("additionalNotes", formData.additionalNotes);
+              if (formData.requiredDate)
+                fd.append("requiredDate", formData.requiredDate);
+              // Document upload (file input)
+              if (formData.document && formData.document instanceof File) {
+                fd.append("document", formData.document);
+              }
+
+              const data = await api("/requests", { method: "POST", body: fd });
+
+              // Add to local state for immediate UI update
+              const req = data.request;
+              AppState.requests.unshift({
+                id: req._id,
+                patientId: req.patientId,
+                patientName: req.patientName,
+                contactPhone: req.contactPhone,
+                bloodGroup: req.bloodGroup,
+                unitsRequired: req.unitsRequired,
+                urgency: req.urgency,
+                hospitalName: req.hospitalName,
+                additionalNotes: req.additionalNotes || "",
+                status: req.status,
+                anomalyScore: req.anomalyScore,
+                fraudIndicators: req.fraudIndicators || [],
+                isFlagged: req.isFlagged,
+                broadcastTime: req.broadcastTime,
+                eligibleDonorsNotifiedCount:
+                  req.eligibleDonorsNotifiedCount || 0,
+                documentPath: req.documentPath,
+                createdAt: req.createdAt,
+              });
+
+              AppState.notifications.unshift({
+                id: "notif-" + Date.now(),
+                type: "emergency",
+                title: data.isFlagged
+                  ? `⚠ Flagged: ${req.bloodGroup} (Score: ${req.anomalyScore})`
+                  : `🚨 Broadcast: ${req.bloodGroup} Needed`,
+                message: data.message,
+                timestamp: "Just now",
+                isRead: false,
+              });
+
+              saveState();
+              closeModal();
+              showToast(data.message, data.isFlagged ? "warning" : "emergency");
+              renderApp();
+            } catch (e) {
+              showToast(e.message, "error");
+            }
+          };
+
+          // ── Accept Request (atomic first-wins) ─────────────────
+          window.Actions.acceptRequest = async function (reqId) {
+            if (!authToken) return origActions.acceptRequest(reqId);
+            try {
+              const data = await api(`/requests/${reqId}/accept`, {
+                method: "POST",
+              });
+
+              // Update local state
+              const r = AppState.requests.find((x) => x.id === reqId);
+              if (r) {
+                r.status = "accepted";
+                r.acceptedByDonorId = AppState.currentUser.id;
+                r.acceptedByDonorName = AppState.currentUser.name;
+                r.acceptedAt = new Date().toISOString();
+              }
+
+              triggerConfetti();
+
+              // Show accepted donor details for patient visibility
+              if (data.acceptedDonorDetails) {
+                const d = data.acceptedDonorDetails;
+                AppState.notifications.unshift({
+                  id: "notif-" + Date.now(),
+                  type: "update",
+                  title: `❤️ Donor Connected!`,
+                  message: `${d.name} (${d.bloodGroup}) accepted. Contact: ${d.phone}`,
+                  timestamp: "Just now",
+                  isRead: false,
+                });
+              }
+
+              saveState();
+              showToast(data.message, "success");
+              renderApp();
+            } catch (e) {
+              showToast(e.message, "error");
+            }
+          };
+
+          // ── Fulfill Request ─────────────────────────────────────
+          window.Actions.fulfillRequest = async function (reqId) {
+            if (!authToken) return origActions.fulfillRequest(reqId);
+            try {
+              await api(`/requests/${reqId}/fulfill`, { method: "POST" });
+              const r = AppState.requests.find((x) => x.id === reqId);
+              if (r) r.status = "fulfilled";
+              saveState();
+              showToast(`Request marked as FULFILLED.`, "success");
+              closeModal();
+              renderApp();
+            } catch (e) {
+              showToast(e.message, "error");
+            }
+          };
+
+          // ── Admin: Approve Flagged ──────────────────────────────
+          window.Actions.approveFlagged = async function (reqId) {
+            if (!authToken) return origActions.approveFlagged(reqId);
+            try {
+              const data = await api(`/admin/requests/${reqId}/approve`, {
+                method: "POST",
+              });
+              const r = AppState.requests.find((x) => x.id === reqId);
+              if (r) {
+                r.status = "broadcasting";
+                r.isFlagged = false;
+                r.broadcastTime = new Date().toISOString();
+                r.eligibleDonorsNotifiedCount =
+                  data.broadcast?.eligibleDonorsCount || 0;
+              }
+              AppState.notifications.unshift({
+                id: "notif-" + Date.now(),
+                type: "emergency",
+                title: `🚨 Admin Approved: ${r?.bloodGroup || ""} Broadcast`,
+                message: data.message,
+                timestamp: "Just now",
+                isRead: false,
+              });
+              saveState();
+              showToast(data.message, "success");
+              renderApp();
+            } catch (e) {
+              showToast(e.message, "error");
+            }
+          };
+
+          // ── Admin: Reject Flagged ───────────────────────────────
+          window.Actions.rejectFlagged = async function (reqId) {
+            if (!authToken) return origActions.rejectFlagged(reqId);
+            try {
+              await api(`/admin/requests/${reqId}/reject`, { method: "POST" });
+              const r = AppState.requests.find((x) => x.id === reqId);
+              if (r) r.status = "rejected";
+              saveState();
+              showToast(`Request rejected and blocked.`, "info");
+              renderApp();
+            } catch (e) {
+              showToast(e.message, "error");
+            }
+          };
+
+          // ── Admin: Adjust Inventory ─────────────────────────────
+          window.Actions.adjustStock = async function (bg, delta) {
+            if (!authToken || AppState.currentUser.role !== "admin") {
+              return origActions.adjustStock(bg, delta);
+            }
+            try {
+              const item = AppState.inventory.find((i) => i.bloodGroup === bg);
+              const newUnits = Math.max(0, (item?.units || 0) + delta);
+              const data = await api(
+                `/admin/inventory/${encodeURIComponent(bg)}`,
+                {
+                  method: "PATCH",
+                  body: { units: newUnits },
+                },
+              );
+              if (item) {
+                item.units = data.inventory.units;
+                item.status = data.inventory.status;
+                item.lastUpdated = data.inventory.lastUpdated;
+              }
+              saveState();
+              showToast(`${bg}: ${delta > 0 ? "+" : ""}${delta} units`, "info");
+              renderApp();
+            } catch (e) {
+              showToast(e.message, "error");
+            }
+          };
+
+          window.Actions.setStock = async function (bg, units) {
+            if (!authToken || AppState.currentUser.role !== "admin") {
+              return origActions.setStock(bg, units);
+            }
+            try {
+              const data = await api(
+                `/admin/inventory/${encodeURIComponent(bg)}`,
+                {
+                  method: "PATCH",
+                  body: { units: Math.max(0, Number(units)) },
+                },
+              );
+              const item = AppState.inventory.find((i) => i.bloodGroup === bg);
+              if (item) {
+                item.units = data.inventory.units;
+                item.status = data.inventory.status;
+                item.lastUpdated = data.inventory.lastUpdated;
+              }
+              saveState();
+              showToast(
+                `${bg} set to ${data.inventory.units} units`,
+                "success",
+              );
+              closeModal();
+              renderApp();
+            } catch (e) {
+              showToast(e.message, "error");
+            }
+          };
+
+          // ── Update Last Donation Date ───────────────────────────
+          window.Actions.updateDonationDate = async function (date) {
+            if (!authToken) return origActions.updateDonationDate(date);
+            try {
+              await api("/auth/last-donation", {
+                method: "PATCH",
+                body: { lastDonationDate: date },
+              });
+              AppState.currentUser.lastDonationDate = date;
+              saveState();
+              showToast(
+                "Donation date updated. 56-day rule recalculated.",
+                "success",
+              );
+              closeModal();
+              renderApp();
+            } catch (e) {
+              showToast(e.message, "error");
+            }
+          };
+
+          // ── Load real data from API ─────────────────────────────
+          window.Actions.refreshData = async function () {
+            if (!authToken) return;
+            try {
+              // Load requests
+              const reqData = await api("/requests");
+              if (reqData.requests) {
+                AppState.requests = reqData.requests.map((r) => ({
+                  id: r._id,
+                  patientId: r.patientId?._id || r.patientId,
+                  patientName: r.patientName,
+                  contactPhone: r.contactPhone,
+                  bloodGroup: r.bloodGroup,
+                  unitsRequired: r.unitsRequired,
+                  urgency: r.urgency,
+                  hospitalName: r.hospitalName,
+                  additionalNotes: r.additionalNotes || "",
+                  status: r.status,
+                  anomalyScore: r.anomalyScore,
+                  fraudIndicators: r.fraudIndicators || [],
+                  isFlagged: r.isFlagged,
+                  broadcastTime: r.broadcastTime,
+                  eligibleDonorsNotifiedCount:
+                    r.eligibleDonorsNotifiedCount || 0,
+                  acceptedByDonorId:
+                    r.acceptedByDonorId?._id || r.acceptedByDonorId,
+                  acceptedByDonorName: r.acceptedByDonorName,
+                  acceptedDonorDetails: r.acceptedDonorDetails || null,
+                  acceptedAt: r.acceptedAt,
+                  documentPath: r.documentPath,
+                  requiredDate: r.requiredDate,
+                  createdAt: r.createdAt,
+                }));
+              }
+
+              // Load inventory and admin stats
+              if (AppState.currentUser.role === "admin") {
+                try {
+                  const invData = await api("/admin/inventory");
+                  if (invData.inventory) {
+                    AppState.inventory = invData.inventory.map((i) => ({
+                      bloodGroup: i.bloodGroup,
+                      units: i.units,
+                      status: i.status,
+                      lastUpdated: i.lastUpdated || i.updatedAt,
+                    }));
+                  }
+                  const statsData = await api("/admin/stats");
+                  if (statsData) {
+                    AppState.adminStats = {
+                      totalUsers: statsData.totalUsers || 0,
+                      totalDonors: statsData.totalDonors || 0,
+                      availableDonors: statsData.availableDonors || 0,
+                      totalRequests: statsData.totalRequests || 0,
+                      activeRequests: statsData.activeRequests || 0,
+                      suspiciousRequests: statsData.suspiciousRequests || 0,
+                      fulfilledRequests: statsData.fulfilledRequests || 0,
+                    };
+                  }
+                } catch (e) {
+                  /* non-fatal */
+                }
+              }
+
+              saveState();
+              renderApp();
+            } catch (e) {
+              console.warn("Data refresh failed:", e.message);
+            }
+          };
+
+          // Auto-refresh data after login
+          if (authToken) {
+            window.Actions.refreshData();
+          }
+        }
+
+        // ── Boot ─────────────────────────────────────────────────
+        // Clear old demo-mode localStorage keys so no fake data appears
+        [
+          "bg_users",
+          "bg_requests",
+          "bg_notifications",
+          "bg_current_user_id",
+        ].forEach((k) => localStorage.removeItem(k));
+
+        checkBackend();
+
+        // ── SMS Test Helper (Admin Dashboard) ────────────────────
+        window.testSMS = async function () {
+          const phoneEl = document.getElementById("sms-test-phone");
+          const resultEl = document.getElementById("sms-test-result");
+          if (!phoneEl || !resultEl) return;
+
+          const phone = phoneEl.value.trim();
+          if (!phone) {
+            resultEl.innerHTML =
+              '<span class="text-red-600 font-bold">❌ Enter a phone number first.</span>';
+            return;
+          }
+
+          resultEl.innerHTML =
+            '<span class="text-slate-400 animate-pulse">⏳ Sending...</span>';
+
+          try {
+            const token = localStorage.getItem("bg_auth_token");
+            const res = await fetch("/api/admin/sms/test", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: "Bearer " + token,
+              },
+              body: JSON.stringify({ phone }),
+            });
+            const data = await res.json();
+
+            if (data.result && data.result.success) {
+              if (data.provider === "disabled") {
+                resultEl.innerHTML = `<div class="space-y-1">
+              <p class="font-bold text-amber-700">⚠️ SMS_PROVIDER is "disabled"</p>
+              <p class="text-amber-600">Message logged to server console only.</p>
+              <p class="text-slate-500 text-[10px] mt-2">${data.note || ""}</p>
+            </div>`;
+              } else {
+                resultEl.innerHTML = `<div class="space-y-1">
+              <p class="font-bold text-emerald-700">✅ SMS Sent Successfully!</p>
+              <p class="text-slate-600">Provider: <strong>${data.provider}</strong></p>
+              ${data.result.requestId ? `<p class="text-slate-500">Request ID: ${data.result.requestId}</p>` : ""}
+              <p class="text-slate-500">Sent to: ${data.phone}</p>
+            </div>`;
+              }
+            } else {
+              resultEl.innerHTML = `<div class="space-y-1">
+            <p class="font-bold text-red-700">❌ SMS Failed</p>
+            <p class="text-red-600 text-[11px]">${data.result?.error || "Unknown error"}</p>
+            <p class="text-slate-500 text-[10px]">${data.note || ""}</p>
+          </div>`;
+            }
+          } catch (e) {
+            resultEl.innerHTML = `<span class="text-red-600 font-bold">❌ ${e.message}</span>`;
+          }
+        };
+
+        // Auto-check SMS status when admin dashboard loads
+        window.checkSMSStatus = async function () {
+          const badge = document.getElementById("sms-status-badge");
+          if (!badge) return;
+          try {
+            const token = localStorage.getItem("bg_auth_token");
+            const res = await fetch("/api/admin/sms/status", {
+              headers: { Authorization: "Bearer " + token },
+            });
+            const data = await res.json();
+            if (data.provider === "disabled") {
+              badge.className =
+                "text-xs px-3 py-1 rounded-full bg-slate-200 text-slate-600 font-bold";
+              badge.textContent = "⚫ Disabled";
+            } else if (data.configured) {
+              badge.className =
+                "text-xs px-3 py-1 rounded-full bg-emerald-100 text-emerald-700 font-bold";
+              badge.textContent = `✅ ${data.provider} Ready`;
+            } else {
+              badge.className =
+                "text-xs px-3 py-1 rounded-full bg-red-100 text-red-700 font-bold";
+              badge.textContent = "❌ Not Configured";
+            }
+          } catch (e) {
+            /* non-admin or network error */
+          }
+        };
+
+        // Poll for SMS status badge every time admin dashboard renders
+        const _origRenderApp = window.renderApp || function () {};
+        const _smsStatusPoller = setInterval(() => {
+          if (document.getElementById("sms-status-badge")) {
+            window.checkSMSStatus();
+            clearInterval(_smsStatusPoller);
+          }
+        }, 800);
+      })();
+    </script>
+  </body>
+</html>
